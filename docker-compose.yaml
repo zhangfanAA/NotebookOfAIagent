@@ -1,0 +1,80 @@
+# ============================================
+# 智能学习助手 — Docker Compose 配置
+# ============================================
+# 启动全部服务: docker-compose up -d
+# 查看日志:     docker-compose logs -f
+# 停止服务:     docker-compose down
+# ============================================
+
+version: "3.8"
+
+services:
+  # ---- MySQL 数据库 ----
+  mysql:
+    image: mysql:8.0
+    container_name: la-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: "1234"
+      MYSQL_DATABASE: project
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p1234"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---- FastAPI 后端 ----
+  api:
+    build: .
+    container_name: la-api
+    restart: unless-stopped
+    command: ["python", "main.py", "api", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: "1234"
+      DB_NAME: project
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # ---- Streamlit 前端 ----
+  frontend:
+    build: .
+    container_name: la-frontend
+    restart: unless-stopped
+    command: ["python", "main.py", "frontend", "--port", "8501"]
+    ports:
+      - "8501:8501"
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: "1234"
+      DB_NAME: project
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  mysql_data:

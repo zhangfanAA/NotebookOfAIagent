@@ -1,0 +1,45 @@
+# ============================================
+# 智能学习助手 — 配置文件
+# ============================================
+
+database:
+  host: localhost
+  port: 3306
+  user: root
+  password: "1234"
+  database: project
+  pool_size: 5
+
+llm:
+  primary:
+    provider: ollama
+    model: qwen2.5:7b-instruct
+    base_url: http://localhost:11434
+    timeout: 30
+  fallback:
+    provider: deepseek
+    model: deepseek-chat
+    api_key: ""           # 通过 .env 的 DEEPSEEK_API_KEY 设置
+    base_url: https://api.deepseek.com/v1
+    timeout: 30
+
+embedding:
+  model: BAAI/bge-small-zh-v1.5
+  device: cpu
+
+vector_store:
+  persist_dir: ./data/chroma_db
+  collection_name: course_materials
+
+chunking:
+  chunk_size: 500
+  chunk_overlap: 50
+
+agent:
+  max_loops: 3
+  retrieve_top_k: 5
+
+app:
+  host: 0.0.0.0
+  port: 8000
+  debug: false

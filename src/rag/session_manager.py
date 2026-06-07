@@ -18,17 +18,17 @@ class SessionManager:
         self._session_repo = SessionRepository()
         self._message_repo = MessageRepository()
 
-    def create_session(self, title: str = "新会话") -> str:
+    def create_session(self, title: str = "新会话", user_id: int = None) -> str:
         """创建新会话，返回 session_id"""
-        return self._session_repo.create_session(title)
+        return self._session_repo.create_session(title, user_id)
 
-    def get_sessions(self) -> list:
+    def get_sessions(self, user_id: int = None) -> list:
         """获取会话列表"""
-        return self._session_repo.get_sessions()
+        return self._session_repo.get_sessions(user_id=user_id)
 
-    def search_sessions(self, keyword: str) -> list:
+    def search_sessions(self, keyword: str, user_id: int = None) -> list:
         """搜索会话（标题 + 内容）"""
-        return self._session_repo.search_sessions(keyword)
+        return self._session_repo.search_sessions(keyword, user_id=user_id)
 
     def delete_session(self, session_id: str) -> bool:
         """删除会话"""

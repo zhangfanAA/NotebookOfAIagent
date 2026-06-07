@@ -21,67 +21,101 @@ class SessionRepository:
     def __init__(self, db: DBManager = None):
         self.db = db or DBManager()
 
-    def create_session(self, title: str = "新会话") -> str:
+    def create_session(self, title: str = "新会话", user_id: int = None) -> str:
         """
         创建新会话
 
         Args:
             title: 会话标题
+            user_id: 用户 ID
 
         Returns:
             session_id (UUID 格式)
         """
         session_id = generate_id()
-        sql = "INSERT INTO sessions (session_id, title) VALUES (%s, %s)"
-        self.db.execute(sql, (session_id, title))
-        logger.info("创建新会话: %s (%s)", session_id, title)
+        sql = "INSERT INTO sessions (session_id, title, user_id) VALUES (%s, %s, %s)"
+        self.db.execute(sql, (session_id, title, user_id))
+        logger.info("创建新会话: %s (%s) user_id=%s", session_id, title, user_id)
         return session_id
 
-    def get_sessions(self, limit: int = 50) -> list:
+    def get_sessions(self, user_id: int = None, limit: int = 50, offset: int = 0) -> list:
         """
-        获取会话列表（按更新时间倒序）
+        获取会话列表（按更新时间倒序，支持分页）
 
         Returns:
             [{"session_id": str, "title": str, "created_at": str, "updated_at": str}]
         """
-        sql = """
-            SELECT session_id, title, created_at, updated_at
-            FROM sessions
-            WHERE is_active = 1
-            ORDER BY updated_at DESC
-            LIMIT %s
-        """
-        results = self.db.fetch_all(sql, (limit,))
-        # datetime 转字符串
+        if user_id:
+            sql = """
+                SELECT session_id, title, created_at, updated_at
+                FROM sessions
+                WHERE is_active = 1 AND user_id = %s
+                ORDER BY updated_at DESC
+                LIMIT %s OFFSET %s
+            """
+            results = self.db.fetch_all(sql, (user_id, limit, offset))
+        else:
+            sql = """
+                SELECT session_id, title, created_at, updated_at
+                FROM sessions
+                WHERE is_active = 1
+                ORDER BY updated_at DESC
+                LIMIT %s OFFSET %s
+            """
+            results = self.db.fetch_all(sql, (limit, offset))
         for r in results:
             for key in ("created_at", "updated_at"):
                 if isinstance(r.get(key), datetime):
                     r[key] = r[key].isoformat()
         return results
 
-    def search_sessions(self, keyword: str, limit: int = 20) -> list:
+    def count_sessions(self, user_id: int = None) -> int:
+        """获取活跃会话总数"""
+        if user_id:
+            result = self.db.fetch_one("SELECT COUNT(*) as cnt FROM sessions WHERE is_active = 1 AND user_id = %s", (user_id,))
+        else:
+            result = self.db.fetch_one("SELECT COUNT(*) as cnt FROM sessions WHERE is_active = 1")
+        return result["cnt"] if result else 0
+
+    def search_sessions(self, keyword: str, user_id: int = None, limit: int = 20) -> list:
         """按关键词搜索会话（标题 + 消息内容）"""
-        sql = """
-            SELECT DISTINCT s.session_id, s.title, s.created_at, s.updated_at
-            FROM sessions s
-            LEFT JOIN messages m ON s.session_id = m.session_id
-            WHERE s.is_active = 1
-              AND (s.title LIKE %s OR m.content LIKE %s)
-            ORDER BY s.updated_at DESC
-            LIMIT %s
-        """
         pattern = f"%{keyword}%"
-        results = self.db.fetch_all(sql, (pattern, pattern, limit))
+        if user_id:
+            sql = """
+                SELECT DISTINCT s.session_id, s.title, s.created_at, s.updated_at
+                FROM sessions s
+                LEFT JOIN messages m ON s.session_id = m.session_id
+                WHERE s.is_active = 1 AND s.user_id = %s
+                  AND (s.title LIKE %s OR m.content LIKE %s)
+                ORDER BY s.updated_at DESC
+                LIMIT %s
+            """
+            results = self.db.fetch_all(sql, (user_id, pattern, pattern, limit))
+        else:
+            sql = """
+                SELECT DISTINCT s.session_id, s.title, s.created_at, s.updated_at
+                FROM sessions s
+                LEFT JOIN messages m ON s.session_id = m.session_id
+                WHERE s.is_active = 1
+                  AND (s.title LIKE %s OR m.content LIKE %s)
+                ORDER BY s.updated_at DESC
+                LIMIT %s
+            """
+            results = self.db.fetch_all(sql, (pattern, pattern, limit))
         for r in results:
             for key in ("created_at", "updated_at"):
                 if isinstance(r.get(key), datetime):
                     r[key] = r[key].isoformat()
         return results
 
-    def get_session(self, session_id: str) -> dict:
+    def get_session(self, session_id: str, user_id: int = None) -> dict:
         """获取单个会话信息"""
-        sql = "SELECT * FROM sessions WHERE session_id = %s AND is_active = 1"
-        result = self.db.fetch_one(sql, (session_id,))
+        if user_id:
+            sql = "SELECT * FROM sessions WHERE session_id = %s AND is_active = 1 AND user_id = %s"
+            result = self.db.fetch_one(sql, (session_id, user_id))
+        else:
+            sql = "SELECT * FROM sessions WHERE session_id = %s AND is_active = 1"
+            result = self.db.fetch_one(sql, (session_id,))
         if result:
             for key in ("created_at", "updated_at"):
                 if isinstance(result.get(key), datetime):

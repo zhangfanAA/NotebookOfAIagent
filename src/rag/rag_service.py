@@ -11,9 +11,42 @@ RAGService — 统一 RAG 服务接口（门面模式）
 from src.rag.session_manager import SessionManager
 from src.rag.query_engine import QueryEngine
 from src.rag.document_manager import DocumentManager
+from src.rag.mindmap_generator import MindmapGenerator
+from src.rag.quiz_generator import QuizGenerator
+from src.rag.flashcard_generator import FlashcardGenerator
+from src.rag.compare_generator import CompareGenerator
+from src.database.reading_repo import ReadingRepository
+from src.database.bookmark_repo import BookmarkRepository
+from src.database.tag_repo import TagRepository
 from src.logger import get_logger
+import time
 
 logger = get_logger("rag.rag_service")
+
+
+class _TTLCache:
+    """简单的 TTL 内存缓存"""
+
+    def __init__(self):
+        self._store = {}
+
+    def get(self, key: str, ttl: float = 5.0):
+        """获取缓存，过期返回 None"""
+        item = self._store.get(key)
+        if item and time.time() - item[1] < ttl:
+            return item[0]
+        return None
+
+    def set(self, key: str, value):
+        """写入缓存"""
+        self._store[key] = (value, time.time())
+
+    def invalidate(self, prefix: str = ""):
+        """清除匹配前缀的缓存"""
+        if not prefix:
+            self._store.clear()
+        else:
+            self._store = {k: v for k, v in self._store.items() if not k.startswith(prefix)}
 
 
 class RAGService:
@@ -28,6 +61,14 @@ class RAGService:
         self._session_mgr = SessionManager()
         self._query_engine = QueryEngine(self._session_mgr)
         self._doc_mgr = DocumentManager()
+        self._mindmap_gen = MindmapGenerator()
+        self._quiz_gen = QuizGenerator()
+        self._flashcard_gen = FlashcardGenerator()
+        self._compare_gen = CompareGenerator()
+        self._reading_repo = ReadingRepository()
+        self._bookmark_repo = BookmarkRepository()
+        self._tag_repo = TagRepository()
+        self._cache = _TTLCache()
         logger.info("RAGService 初始化完成")
 
     # ===== 查询相关 =====
@@ -40,23 +81,42 @@ class RAGService:
         """流式查询接口"""
         yield from self._query_engine.query_stream(question, session_id)
 
+    def reload_llm_client(self):
+        """重新加载 LLM 客户端（设置变更后调用）"""
+        from src.rag.llm_client import LLMClient
+        self._query_engine._llm_client = LLMClient()
+        logger.info("LLM 客户端已重新加载: provider=%s", self._query_engine._llm_client.provider)
+
     # ===== 会话相关 =====
 
-    def create_session(self, title: str = "新会话") -> str:
+    def create_session(self, title: str = "新会话", user_id: int = None) -> str:
         """创建新会话"""
-        return self._session_mgr.create_session(title)
+        return self._session_mgr.create_session(title, user_id)
 
-    def get_sessions(self) -> list:
-        """获取会话列表"""
-        return self._session_mgr.get_sessions()
+    def get_sessions(self, user_id: int = None) -> list:
+        """获取会话列表（带缓存）"""
+        cache_key = f"sessions_{user_id}"
+        cached = self._cache.get(cache_key, ttl=3.0)
+        if cached is not None:
+            return cached
+        result = self._session_mgr.get_sessions(user_id)
+        self._cache.set(cache_key, result)
+        return result
 
-    def search_sessions(self, keyword: str) -> list:
+    def search_sessions(self, keyword: str, user_id: int = None) -> list:
         """搜索会话"""
-        return self._session_mgr.search_sessions(keyword)
+        return self._session_mgr.search_sessions(keyword, user_id)
 
     def delete_session(self, session_id: str) -> bool:
-        """删除会话"""
-        return self._session_mgr.delete_session(session_id)
+        """删除会话（同时清理聊天记录向量）"""
+        from src.rag import chat_history_store
+        try:
+            chat_history_store.delete_by_session(session_id)
+        except Exception as e:
+            logger.warning("清理聊天向量失败: %s", str(e))
+        result = self._session_mgr.delete_session(session_id)
+        self._cache.invalidate("sessions")
+        return result
 
     def update_session_title(self, session_id: str, title: str) -> bool:
         """更新会话标题"""
@@ -88,21 +148,123 @@ class RAGService:
 
     # ===== 文档相关 =====
 
-    def upload_document(self, file_path: str) -> dict:
+    def upload_document(self, file_path: str, original_filename: str = None, user_id: int = None) -> dict:
         """上传文档"""
-        return self._doc_mgr.upload_document(file_path)
+        result = self._doc_mgr.upload_document(file_path, original_filename, user_id)
+        self._cache.invalidate("documents")
+        self._cache.invalidate("vdb_stats")
+        return result
 
-    def get_documents(self) -> list:
-        """获取文档列表"""
-        return self._doc_mgr.get_documents()
+    def get_documents(self, user_id: int = None) -> list:
+        """获取文档列表（带缓存）"""
+        cache_key = f"documents_{user_id}"
+        cached = self._cache.get(cache_key, ttl=5.0)
+        if cached is not None:
+            return cached
+        result = self._doc_mgr.get_documents(user_id)
+        self._cache.set(cache_key, result)
+        return result
 
     def delete_document(self, doc_id: int) -> bool:
         """删除文档"""
-        return self._doc_mgr.delete_document(doc_id)
+        result = self._doc_mgr.delete_document(doc_id)
+        self._cache.invalidate("documents")
+        self._cache.invalidate("vdb_stats")
+        return result
 
     def get_vector_db_stats(self) -> dict:
-        """获取向量库统计"""
-        return self._doc_mgr.get_vector_db_stats()
+        """获取向量库统计（带缓存）"""
+        cached = self._cache.get("vdb_stats", ttl=10.0)
+        if cached is not None:
+            return cached
+        result = self._doc_mgr.get_vector_db_stats()
+        self._cache.set("vdb_stats", result)
+        return result
+
+    # ===== 思维导图/笔记生成 =====
+
+    def generate_content(self, file_names: list, user_prompt: str = "", output_type: str = "mindmap") -> dict:
+        """生成思维导图或重点笔记"""
+        return self._mindmap_gen.generate(file_names, user_prompt, output_type)
+
+    # ===== 测验相关 =====
+
+    def generate_quiz(self, file_names: list, num_questions: int = 5, difficulty: str = "medium", qtypes: list = None) -> dict:
+        """生成测验题目"""
+        return self._quiz_gen.generate(file_names, num_questions, difficulty, qtypes)
+
+    def check_quiz_answer(self, question: dict, user_answer: str) -> dict:
+        """判分"""
+        return self._quiz_gen.check_answer(question, user_answer)
+
+    # ===== 闪卡相关 =====
+
+    def generate_flashcards(self, file_names: list, num_cards: int = 10, topic_focus: str = "") -> dict:
+        """生成闪卡"""
+        return self._flashcard_gen.generate(file_names, num_cards, topic_focus)
+
+    # ===== 文档对比 =====
+
+    def compare_documents(self, file_names: list, focus: str = "") -> dict:
+        """对比文档"""
+        return self._compare_gen.generate(file_names, focus)
+
+    # ===== 阅读进度 =====
+
+    def update_reading_progress(self, file_name: str, current_page: int, total_pages: int = 0, user_id: int = None) -> bool:
+        return self._reading_repo.update_progress(file_name, current_page, total_pages, user_id)
+
+    def get_reading_progress(self, file_name: str, user_id: int = None) -> dict:
+        return self._reading_repo.get_progress(file_name, user_id)
+
+    def get_all_reading_progress(self, user_id: int = None) -> list:
+        cache_key = f"reading_progress_{user_id}"
+        cached = self._cache.get(cache_key, ttl=5.0)
+        if cached is not None:
+            return cached
+        result = self._reading_repo.get_all_progress(user_id)
+        self._cache.set(cache_key, result)
+        return result
+
+    # ===== 书签 =====
+
+    def add_bookmark(self, file_name: str, page_number: int, title: str = None, note: str = None, user_id: int = None) -> int:
+        return self._bookmark_repo.add_bookmark(file_name, page_number, title, note, user_id)
+
+    def get_bookmarks(self, file_name: str, user_id: int = None) -> list:
+        return self._bookmark_repo.get_bookmarks(file_name, user_id)
+
+    def get_all_bookmarks(self, user_id: int = None) -> list:
+        cache_key = f"bookmarks_{user_id}"
+        cached = self._cache.get(cache_key, ttl=5.0)
+        if cached is not None:
+            return cached
+        result = self._bookmark_repo.get_all_bookmarks(user_id)
+        self._cache.set(cache_key, result)
+        return result
+
+    def delete_bookmark(self, bookmark_id: int) -> bool:
+        return self._bookmark_repo.delete_bookmark(bookmark_id)
+
+    # ===== 标签 =====
+
+    def create_tag(self, name: str, color: str = "#5ac8fa") -> int:
+        return self._tag_repo.create_tag(name, color)
+
+    def get_tags(self) -> list:
+        return self._tag_repo.get_tags()
+
+    def delete_tag(self, tag_id: int) -> bool:
+        return self._tag_repo.delete_tag(tag_id)
+
+    def tag_message(self, message_id: int, tag_id: int) -> bool:
+        return self._tag_repo.tag_message(message_id, tag_id)
+
+    def untag_message(self, message_id: int, tag_id: int) -> bool:
+        return self._tag_repo.untag_message(message_id, tag_id)
+
+    def get_message_tags(self, message_id: int) -> list:
+        return self._tag_repo.get_message_tags(message_id)
 
     # ===== 诊断相关 =====
 

@@ -5,6 +5,8 @@ RAG 文档管理模块
 封装文档上传、删除、统计等操作。
 """
 
+import os
+import shutil
 from pathlib import Path
 
 from src.data import vector_store
@@ -15,6 +17,9 @@ from src.logger import get_logger
 
 logger = get_logger("rag.document_manager")
 
+# PDF 永久存储目录
+PDF_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "pdfs")
+
 
 class DocumentManager:
     """文档管理器"""
@@ -22,12 +27,14 @@ class DocumentManager:
     def __init__(self):
         self._doc_repo = DocumentRepository()
 
-    def upload_document(self, file_path: str) -> dict:
+    def upload_document(self, file_path: str, original_filename: str = None, user_id: int = None) -> dict:
         """
         文档上传与入库
 
         Args:
             file_path: 文件本地路径
+            original_filename: 用户上传时的原始文件名（中文等），为 None 时从 file_path 提取
+            user_id: 用户 ID
 
         Returns:
             成功: {"status": "success", "chunks_count": int, "message": str}
@@ -37,16 +44,23 @@ class DocumentManager:
         if not path.exists():
             return {"status": "error", "chunks_count": 0, "message": f"文件不存在: {file_path}"}
 
-        file_name = path.name
+        file_name = original_filename if original_filename else path.name
         file_type = path.suffix.lstrip(".").lower()
         file_size = path.stat().st_size
+
+        # 复制到永久存储目录
+        os.makedirs(PDF_DIR, exist_ok=True)
+        permanent_path = os.path.join(PDF_DIR, file_name)
+        shutil.copy2(str(path), permanent_path)
+        logger.info("文件已复制到永久目录: %s", permanent_path)
 
         # 记录到 MySQL
         doc_id = self._doc_repo.create_document(
             file_name=file_name,
-            file_path=str(path),
+            file_path=permanent_path,
             file_type=file_type,
             file_size=file_size,
+            user_id=user_id,
         )
 
         try:
@@ -56,6 +70,11 @@ class DocumentManager:
             else:
                 return {"status": "error", "chunks_count": 0,
                         "message": f"暂不支持的文件类型: {file_type}"}
+
+            # 提取并存储全文（后续生成思维导图/测验直接读取，不再重复解析）
+            full_text = "\n\n".join(p["content"] for p in pages if p.get("content"))
+            if full_text:
+                self._doc_repo.store_full_text(doc_id, full_text)
 
             # 分块
             chunks = chunk_pages(pages)
@@ -82,9 +101,9 @@ class DocumentManager:
             logger.error("文档上传失败: %s — %s", file_name, error_msg)
             return {"status": "error", "chunks_count": 0, "message": error_msg}
 
-    def get_documents(self) -> list:
+    def get_documents(self, user_id: int = None) -> list:
         """获取文档列表"""
-        return self._doc_repo.get_documents()
+        return self._doc_repo.get_documents(user_id=user_id)
 
     def delete_document(self, doc_id: int) -> bool:
         """删除文档（同时删除向量库中的 chunks）"""

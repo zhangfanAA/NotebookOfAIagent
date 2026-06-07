@@ -11,6 +11,7 @@ from src.rag.graph import get_graph
 from src.rag.state import AgentState
 from src.rag.llm_client import LLMClient
 from src.rag.diagnosis import DiagnosisEngine
+from src.rag import chat_history_store
 from src.utils.security import sanitize_input, build_safe_system_prompt
 from src.config import get_config
 from src.logger import get_logger
@@ -66,13 +67,48 @@ class QueryEngine:
             context_messages = self._session_mgr.get_recent_context(session_id, turns=3)
             effective_question = question
             if context_messages and _has_reference(question):
-                effective_question = self._rewrite_with_context(question, context_messages)
+                effective_question = _rewrite_with_context(question, context_messages)
                 logger.info("多轮上下文改写: '%s' → '%s'", question[:50], effective_question[:50])
+
+            # 构建记忆上下文（必须在 add_message 之前，避免当前问题重复）
+            history_context = ""
+            try:
+                parts = []
+
+                # 1) 语义检索跨会话历史记录
+                history = chat_history_store.search_history(
+                    effective_question, top_k=3
+                )
+                if history:
+                    for h in history:
+                        if h.get("session_id") == session_id:
+                            continue
+                        parts.append(f"[历史] 问: {h['question']}\n答: {h['answer'][:200]}")
+                    logger.info("检索到 %d 条跨会话历史记录", len(history))
+
+                # 2) 语义搜索无结果时，兜底注入当前会话最近 2 轮对话
+                if not parts:
+                    recent_qa = self._session_mgr.get_recent_context(session_id, turns=2)
+                    if recent_qa:
+                        session_parts = []
+                        for m in recent_qa:
+                            role = "学生" if m["role"] == "user" else "助手"
+                            session_parts.append(f"{role}: {m['content'][:200]}")
+                        parts.append(f"[当前会话最近对话]\n" + "\n".join(session_parts))
+
+                if parts:
+                    history_context = "\n---\n".join(parts)
+            except Exception as e:
+                logger.debug("历史记录检索跳过: %s", str(e))
 
             # 构建初始状态
             max_loops = self._config["agent"]["max_loops"]
+            query_for_agent = effective_question
+            if history_context:
+                query_for_agent = f"[相关历史参考]\n{history_context}\n\n[当前问题]\n{effective_question}"
+
             initial_state: AgentState = {
-                "question": effective_question,
+                "question": query_for_agent,
                 "rewritten_query": None,
                 "documents": None,
                 "relevance": None,
@@ -110,6 +146,12 @@ class QueryEngine:
                 loop_count=loop_count,
             )
 
+            # 存储到聊天记录向量库（增强记忆）
+            try:
+                chat_history_store.store_qa(session_id, question, answer, sources)
+            except Exception as e:
+                logger.debug("聊天记录存储跳过: %s", str(e))
+
             # 自动更新会话标题
             self._maybe_update_title(session_id, question)
 
@@ -142,6 +184,7 @@ class QueryEngine:
         Yields:
             dict: {"type": "token"|"result"|"error", "data": ...}
         """
+        logger.info("query_stream v2 loaded - no self._rewrite_with_context")
         if not question or not question.strip():
             yield {"type": "error", "data": "问题不能为空"}
             return
@@ -160,13 +203,47 @@ class QueryEngine:
             original_question = None
             if context_messages and _has_reference(question):
                 original_question = question
-                effective_question = self._rewrite_with_context(question, context_messages)
+                effective_question = _rewrite_with_context(question, context_messages)
                 context_used = True
+
+            # 构建记忆上下文（必须在 add_message 之前，避免当前问题重复）
+            history_context = ""
+            try:
+                parts = []
+
+                # 1) 语义检索跨会话历史记录
+                history = chat_history_store.search_history(
+                    effective_question, top_k=3
+                )
+                if history:
+                    for h in history:
+                        if h.get("session_id") == session_id:
+                            continue
+                        parts.append(f"[历史] 问: {h['question']}\n答: {h['answer'][:200]}")
+                    logger.info("检索到 %d 条跨会话历史记录", len(history))
+
+                # 2) 语义搜索无结果时，兜底注入当前会话最近 2 轮对话
+                if not parts:
+                    recent_qa = self._session_mgr.get_recent_context(session_id, turns=2)
+                    if recent_qa:
+                        session_parts = []
+                        for m in recent_qa:
+                            role = "学生" if m["role"] == "user" else "助手"
+                            session_parts.append(f"{role}: {m['content'][:200]}")
+                        parts.append(f"[当前会话最近对话]\n" + "\n".join(session_parts))
+
+                if parts:
+                    history_context = "\n---\n".join(parts)
+            except Exception as e:
+                logger.debug("历史记录检索跳过: %s", str(e))
 
             # 执行 Agent 检索+评估
             max_loops = self._config["agent"]["max_loops"]
+            query_for_agent = effective_question
+            if history_context:
+                query_for_agent = f"[相关历史参考]\n{history_context}\n\n[当前问题]\n{effective_question}"
             initial_state: AgentState = {
-                "question": effective_question,
+                "question": query_for_agent,
                 "rewritten_query": None,
                 "documents": None,
                 "relevance": None,
@@ -263,6 +340,12 @@ class QueryEngine:
                 confidence=round(confidence, 2),
                 loop_count=loop_count,
             )
+
+            # 存储到聊天记录向量库（增强记忆）
+            try:
+                chat_history_store.store_qa(session_id, question, full_answer, sources_list)
+            except Exception as e:
+                logger.debug("聊天记录存储跳过: %s", str(e))
 
             self._maybe_update_title(session_id, question)
             diagnosis_result = self._diagnosis.record_question(session_id, question)

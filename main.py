@@ -40,7 +40,22 @@ def main():
     elif args.command == "api":
         import uvicorn
         from src.config import get_config
+        from src.database.db_manager import DBManager
         config = get_config()
+        # 启动时自动初始化/迁移数据库表
+        db = DBManager()
+        db.init_tables()
+        # 回填旧文档全文（延迟执行，等 uvicorn 完成 import 后再跑）
+        import threading
+        def _backfill():
+            import time
+            time.sleep(5)  # 等 uvicorn 和 torch 完全加载
+            try:
+                from src.rag.document_processor import DocumentProcessor
+                DocumentProcessor().backfill_full_text()
+            except Exception as e:
+                print(f"回填全文失败: {e}")
+        threading.Thread(target=_backfill, daemon=True).start()
         port = args.port or config["app"]["port"]
         uvicorn.run(
             "src.api.routes:app",

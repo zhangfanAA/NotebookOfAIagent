@@ -4,7 +4,7 @@
 任务: TASK-AGENT-007
 
 封装 Ollama 本地模型（主）和 DeepSeek API（备）的统一调用接口。
-支持自动降级：Ollama 不可用时自动切换到 DeepSeek API。
+支持通过数据库设置动态切换本地/云端模型。
 """
 
 import time
@@ -24,9 +24,9 @@ class LLMClient:
     LLM 统一调用客户端
 
     调用策略:
-    1. 优先使用 Ollama 本地模型
-    2. Ollama 不可用时（连接失败/超时），自动降级到 DeepSeek API
-    3. 可通过 use_fallback=True 强制使用 DeepSeek
+    - provider=local  → 只用 Ollama
+    - provider=cloud  → 只用云端 API（OpenAI 兼容格式）
+    - 默认从数据库 settings 表读取 provider
 
     Usage:
         client = LLMClient()
@@ -35,13 +35,15 @@ class LLMClient:
 
     def __init__(self, config: dict = None):
         """
-        初始化主模型（Ollama）和备选模型（DeepSeek API）
+        初始化 LLM 客户端
 
         Args:
             config: llm 配置段，为 None 时从全局配置读取
         """
         if config is None:
             config = get_config()["llm"]
+
+        self._config = config
 
         # Ollama 配置
         self._ollama_config = config["primary"]
@@ -51,27 +53,63 @@ class LLMClient:
         )
         self._ollama_model = self._ollama_config["model"]
 
-        # DeepSeek API 配置（OpenAI 兼容格式）
-        self._deepseek_config = config["fallback"]
-        self._deepseek_client = None
-        self._deepseek_model = self._deepseek_config["model"]
+        # 云端 API 配置（OpenAI 兼容格式）
+        self._cloud_config = config["fallback"]
+        self._cloud_client = None
+        self._cloud_model = self._cloud_config["model"]
 
-        api_key = self._deepseek_config.get("api_key", "")
-        if api_key:
-            self._deepseek_client = OpenAI(
-                api_key=api_key,
-                base_url=self._deepseek_config["base_url"],
-                timeout=self._deepseek_config.get("timeout", 30),
-            )
-            logger.info("DeepSeek API 客户端已初始化: model=%s", self._deepseek_model)
-        else:
-            logger.warning("DeepSeek API Key 未配置，云端降级不可用")
+        # 从数据库读取当前 provider 设置
+        self._provider = self._read_provider_from_db()
+
+        # 初始化云端客户端（如果配置了 API Key）
+        self._init_cloud_client()
 
         logger.info(
-            "LLMClient 初始化完成: primary=%s, fallback=%s",
+            "LLMClient 初始化完成: provider=%s, local_model=%s, cloud_model=%s",
+            self._provider,
             self._ollama_model,
-            self._deepseek_model if self._deepseek_client else "不可用",
+            self._cloud_model if self._cloud_client else "不可用",
         )
+
+    def _read_provider_from_db(self) -> str:
+        """从数据库读取当前 LLM provider 设置"""
+        try:
+            from src.database.settings_repo import SettingsRepository
+            repo = SettingsRepository()
+            provider = repo.get("llm_provider")
+            if provider in ("local", "cloud"):
+                # 同时读取云端配置覆盖
+                cloud_url = repo.get("cloud_base_url")
+                cloud_key = repo.get("cloud_api_key")
+                cloud_model = repo.get("cloud_model")
+                if cloud_url:
+                    self._cloud_config["base_url"] = cloud_url
+                if cloud_key:
+                    self._cloud_config["api_key"] = cloud_key
+                if cloud_model:
+                    self._cloud_model = cloud_model
+                    self._cloud_config["model"] = cloud_model
+                return provider
+        except Exception as e:
+            logger.debug("读取 LLM 设置失败，使用默认: %s", str(e))
+        return "local"
+
+    def _init_cloud_client(self):
+        """初始化云端 API 客户端"""
+        api_key = self._cloud_config.get("api_key", "")
+        if api_key:
+            self._cloud_client = OpenAI(
+                api_key=api_key,
+                base_url=self._cloud_config["base_url"],
+                timeout=self._cloud_config.get("timeout", 30),
+            )
+            logger.info("云端 API 客户端已初始化: model=%s, base_url=%s", self._cloud_model, self._cloud_config["base_url"])
+        else:
+            logger.warning("云端 API Key 未配置")
+
+    @property
+    def provider(self) -> str:
+        return self._provider
 
     def is_ollama_available(self) -> bool:
         """检测 Ollama 服务是否在线"""
@@ -91,31 +129,24 @@ class LLMClient:
         """
         标准对话调用
 
-        调用策略:
-        - use_fallback=True → 直接使用 DeepSeek API
-        - 否则先尝试 Ollama，失败后自动降级到 DeepSeek
+        根据 provider 设置决定调用本地或云端模型。
 
         Args:
             messages: [{"role": "system"|"user"|"assistant", "content": str}]
-            temperature: 温度参数（评估节点建议 0，生成节点建议 0.3）
+            temperature: 温度参数
             max_tokens: 最大生成 token 数
-            use_fallback: 是否强制使用 DeepSeek API
+            use_backward_compat: 兼容旧代码，不再使用
 
         Returns:
             模型输出字符串
 
         Raises:
-            RuntimeError: 两个模型都调用失败时抛出
+            RuntimeError: 调用失败时抛出
         """
-        if use_fallback:
-            return self._call_deepseek(messages, temperature, max_tokens)
-
-        # 先尝试 Ollama
-        try:
+        if self._provider == "cloud":
+            return self._call_cloud(messages, temperature, max_tokens)
+        else:
             return self._call_ollama(messages, temperature, max_tokens)
-        except Exception as e:
-            logger.warning("Ollama 调用失败: %s，尝试 DeepSeek API 降级", str(e))
-            return self._call_deepseek(messages, temperature, max_tokens)
 
     def chat_stream(
         self,
@@ -126,12 +157,18 @@ class LLMClient:
         """
         流式对话调用（生成器）
 
-        逐 token 返回结果，用于前端实时显示。
+        根据 provider 设置决定调用本地或云端模型。
 
         Yields:
             str: 每个 token 的文本片段
         """
-        # 优先 Ollama 流式
+        if self._provider == "cloud":
+            yield from self._stream_cloud(messages, temperature, max_tokens)
+        else:
+            yield from self._stream_ollama(messages, temperature, max_tokens)
+
+    def _stream_ollama(self, messages, temperature, max_tokens):
+        """Ollama 流式调用"""
         try:
             stream = self._ollama_client.chat(
                 model=self._ollama_model,
@@ -143,20 +180,17 @@ class LLMClient:
                 content = chunk.get("message", {}).get("content", "")
                 if content:
                     yield content
-            return
         except Exception as e:
-            logger.warning("Ollama 流式调用失败: %s，尝试 DeepSeek", str(e))
+            logger.error("Ollama 流式调用失败: %s", str(e))
+            raise RuntimeError(f"Ollama 流式调用失败: {e}")
 
-        # DeepSeek 流式降级
-        if not self._deepseek_client:
-            # 兜底：非流式调用
-            result = self.chat(messages, temperature, max_tokens)
-            yield result
-            return
-
+    def _stream_cloud(self, messages, temperature, max_tokens):
+        """云端 API 流式调用"""
+        if not self._cloud_client:
+            raise RuntimeError("云端 API 不可用: 未配置 API Key")
         try:
-            stream = self._deepseek_client.chat.completions.create(
-                model=self._deepseek_model,
+            stream = self._cloud_client.chat.completions.create(
+                model=self._cloud_model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -167,9 +201,8 @@ class LLMClient:
                 if delta.content:
                     yield delta.content
         except Exception as e:
-            logger.error("DeepSeek 流式调用也失败: %s", str(e))
-            result = self.chat(messages, temperature, max_tokens, use_fallback=True)
-            yield result
+            logger.error("云端 API 流式调用失败: %s", str(e))
+            raise RuntimeError(f"云端 API 流式调用失败: {e}")
 
     def _call_ollama(self, messages: list, temperature: float, max_tokens: int) -> str:
         """调用 Ollama 本地模型"""
@@ -187,46 +220,45 @@ class LLMClient:
         logger.debug("Ollama 响应: %.2fs, %d tokens", elapsed, len(content))
         return content
 
-    def _call_deepseek(self, messages: list, temperature: float, max_tokens: int, retries: int = 3) -> str:
-        """调用 DeepSeek API（OpenAI 兼容格式，带重试）"""
-        if not self._deepseek_client:
+    def _call_cloud(self, messages: list, temperature: float, max_tokens: int, retries: int = 3) -> str:
+        """调用云端 API（OpenAI 兼容格式，带重试）"""
+        if not self._cloud_client:
             raise RuntimeError(
-                "DeepSeek API 不可用: 未配置 API Key。"
-                "请在 .env 文件中设置 DEEPSEEK_API_KEY"
+                "云端 API 不可用: 未配置 API Key。请在设置中填入 API Key"
             )
 
         last_error = None
         for attempt in range(retries):
             try:
                 start = time.time()
-                response = self._deepseek_client.chat.completions.create(
-                    model=self._deepseek_model,
+                response = self._cloud_client.chat.completions.create(
+                    model=self._cloud_model,
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
                 elapsed = time.time() - start
                 content = response.choices[0].message.content
-                logger.debug("DeepSeek API 响应: %.2fs, %d chars", elapsed, len(content))
+                logger.debug("云端 API 响应: %.2fs, %d chars", elapsed, len(content))
                 return content
             except Exception as e:
                 last_error = e
                 if attempt < retries - 1:
                     wait = 2 ** attempt
-                    logger.warning("DeepSeek API 调用失败 (尝试 %d/%d): %s，%ds 后重试", attempt + 1, retries, str(e), wait)
+                    logger.warning("云端 API 调用失败 (尝试 %d/%d): %s，%ds 后重试", attempt + 1, retries, str(e), wait)
                     time.sleep(wait)
 
-        raise RuntimeError(f"DeepSeek API 调用失败（已重试 {retries} 次）: {last_error}")
+        raise RuntimeError(f"云端 API 调用失败（已重试 {retries} 次）: {last_error}")
 
     def vision(self, image_path: str, prompt: str) -> str:
         """
         多模态调用（图片文字/公式提取）
 
-        优先使用 Ollama Qwen-VL，降级时用 DeepSeek vision。
+        优先使用 Ollama Qwen-VL，降级时用云端 vision。
 
         Args:
             image_path: 图片本地路径
-            prompt: 提取指令，如 "请提取图片中的文字和公式"
+            prompt: 提取指令
 
         Returns:
             提取出的文字内容
@@ -253,11 +285,11 @@ class LLMClient:
         except Exception as e:
             logger.warning("Ollama 多模态调用失败: %s", str(e))
 
-        # DeepSeek 降级（如果支持 vision）
-        if self._deepseek_client:
+        # 云端降级
+        if self._cloud_client:
             try:
-                response = self._deepseek_client.chat.completions.create(
-                    model=self._deepseek_model,
+                response = self._cloud_client.chat.completions.create(
+                    model=self._cloud_model,
                     messages=[
                         {
                             "role": "user",
@@ -276,6 +308,6 @@ class LLMClient:
                 )
                 return response.choices[0].message.content
             except Exception as e:
-                logger.error("DeepSeek vision 调用也失败: %s", str(e))
+                logger.error("云端 vision 调用也失败: %s", str(e))
 
         raise RuntimeError("所有多模态模型调用均失败")

@@ -11,6 +11,7 @@ from src.frontend.components import (
     get_friendly_error,
     render_latex_content,
     render_sources,
+    render_error_toast,
 )
 
 
@@ -162,7 +163,7 @@ def _handle_input(rag):
             status_placeholder.empty()
             if error_msg:
                 friendly_msg = get_friendly_error(error_msg)
-                st.error(friendly_msg)
+                render_error_toast(friendly_msg, error_msg)
             else:
                 if context_info:
                     with st.expander("🔗 上下文增强", expanded=False):

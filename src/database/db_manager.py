@@ -214,6 +214,17 @@ TABLES = {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """,
+    "download_files": """
+        CREATE TABLE IF NOT EXISTS download_files (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            file_name VARCHAR(255) NOT NULL,
+            file_path VARCHAR(500) NOT NULL,
+            file_size BIGINT DEFAULT 0,
+            uploaded_by INT DEFAULT NULL,
+            uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_uploaded_at (uploaded_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """,
 }
 
 

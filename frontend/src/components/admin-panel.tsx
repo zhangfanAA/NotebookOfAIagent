@@ -413,26 +413,47 @@ function LogsTab() {
 
 function SettingsTab() {
   const [allowRegistration, setAllowRegistration] = useState(true);
+  const [paddleOcrEnabled, setPaddleOcrEnabled] = useState(true);
+  const [gpuStatus, setGpuStatus] = useState<{ gpu_available: boolean; device: string; details?: string } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null);
 
   useEffect(() => {
-    api.getRegistrationSetting().then((res) => {
-      setAllowRegistration(res.allow_registration);
+    Promise.all([
+      api.getRegistrationSetting(),
+      api.getPaddleOcrSetting(),
+      api.getPaddleOcrGpuStatus(),
+    ]).then(([regRes, paddleRes, gpuRes]) => {
+      setAllowRegistration(regRes.allow_registration);
+      setPaddleOcrEnabled(paddleRes.enabled);
+      setGpuStatus(gpuRes);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
 
-  const handleToggle = async () => {
+  const handleToggleRegistration = async () => {
     try {
-      setSaving(true);
+      setSaving("registration");
       const newValue = !allowRegistration;
       await api.updateRegistrationSetting(newValue);
       setAllowRegistration(newValue);
     } catch (e) {
       alert((e as Error).message);
     } finally {
-      setSaving(false);
+      setSaving(null);
+    }
+  };
+
+  const handleTogglePaddleOcr = async () => {
+    try {
+      setSaving("paddle-ocr");
+      const newValue = !paddleOcrEnabled;
+      await api.updatePaddleOcrSetting(newValue);
+      setPaddleOcrEnabled(newValue);
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setSaving(null);
     }
   };
 
@@ -452,6 +473,7 @@ function SettingsTab() {
         <CardTitle className="text-sm font-medium">系统设置</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* 注册开关 */}
         <div className="flex items-center justify-between rounded-lg border p-4">
           <div className="space-y-0.5">
             <div className="text-sm font-medium">开放注册</div>
@@ -460,12 +482,12 @@ function SettingsTab() {
             </div>
           </div>
           <button
-            onClick={handleToggle}
-            disabled={saving}
+            onClick={handleToggleRegistration}
+            disabled={saving !== null}
             className={cn(
               "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
               allowRegistration ? "bg-primary" : "bg-muted-foreground/30",
-              saving && "opacity-50 cursor-not-allowed"
+              saving === "registration" && "opacity-50 cursor-not-allowed"
             )}
           >
             <span
@@ -476,8 +498,51 @@ function SettingsTab() {
             />
           </button>
         </div>
-        <div className="text-xs text-muted-foreground">
+        <div className="text-xs text-muted-foreground -mt-2">
           当前状态：{allowRegistration ? "已开放注册" : "注册已关闭"}
+        </div>
+
+        {/* PaddleOCR 开关 */}
+        <div className="flex items-center justify-between rounded-lg border p-4">
+          <div className="space-y-0.5">
+            <div className="text-sm font-medium">启用 PaddleOCR</div>
+            <div className="text-xs text-muted-foreground">
+              启用后支持扫描型（图片）PDF 的文字识别，关闭则只支持文字型 PDF
+            </div>
+          </div>
+          <button
+            onClick={handleTogglePaddleOcr}
+            disabled={saving !== null}
+            className={cn(
+              "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
+              paddleOcrEnabled ? "bg-primary" : "bg-muted-foreground/30",
+              saving === "paddle-ocr" && "opacity-50 cursor-not-allowed"
+            )}
+          >
+            <span
+              className={cn(
+                "pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-lg ring-0 transition-transform duration-200 ease-in-out",
+                paddleOcrEnabled ? "translate-x-5" : "translate-x-0"
+              )}
+            />
+          </button>
+        </div>
+        <div className="text-xs text-muted-foreground -mt-2 space-y-1">
+          <div>当前状态：{paddleOcrEnabled ? "已启用（支持扫描型 PDF）" : "已禁用（仅支持文字型 PDF）"}</div>
+          {gpuStatus && (
+            <div className="flex items-center gap-1.5">
+              <span>计算设备：</span>
+              <Badge variant={gpuStatus.gpu_available ? "default" : "secondary"} className="text-[10px]">
+                {gpuStatus.device}
+              </Badge>
+              {gpuStatus.details && (
+                <span className="text-muted-foreground">({gpuStatus.details})</span>
+              )}
+              {gpuStatus.gpu_available && (
+                <span className="text-green-600">✓ GPU 加速</span>
+              )}
+            </div>
+          )}
         </div>
       </CardContent>
     </Card>

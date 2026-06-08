@@ -21,6 +21,7 @@ import type {
   UserInfo,
   UsageLogsResponse,
   SiteMessage,
+  DownloadFile,
 } from "./types";
 import { getToken, removeToken } from "./auth";
 
@@ -216,7 +217,7 @@ export async function deleteDocument(docId: number): Promise<{ status: string }>
   return apiFetch(`/api/documents/${docId}`, { method: "DELETE" });
 }
 
-export async function uploadDocument(file: File): Promise<{ status: string; message: string }> {
+export async function uploadDocument(file: File): Promise<{ status: string; message: string; ocr_skipped?: boolean; ocr_skipped_pages?: number }> {
   const token = getToken();
   const formData = new FormData();
   formData.append("file", file);
@@ -555,6 +556,29 @@ export async function checkRegistrationOpen(): Promise<{ allow_registration: boo
   return res.json();
 }
 
+// ===== PaddleOCR Setting =====
+
+export async function getPaddleOcrSetting(): Promise<{ enabled: boolean }> {
+  return apiFetch("/api/admin/settings/paddle-ocr");
+}
+
+export async function updatePaddleOcrSetting(enabled: boolean): Promise<{ enabled: boolean }> {
+  return apiFetch("/api/admin/settings/paddle-ocr", {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export async function checkPaddleOcrEnabled(): Promise<{ enabled: boolean }> {
+  const res = await fetch(`${API_BASE}/api/settings/paddle-ocr`);
+  if (!res.ok) throw new Error("Failed to check paddle ocr setting");
+  return res.json();
+}
+
+export async function getPaddleOcrGpuStatus(): Promise<{ gpu_available: boolean; device: string; details?: string }> {
+  return apiFetch("/api/settings/paddle-ocr/gpu");
+}
+
 // ===== Site Messages =====
 
 export async function sendMessage(toUserId: number, content: string): Promise<{ id: number; status: string }> {
@@ -585,4 +609,36 @@ export async function broadcastMessage(content: string): Promise<{ status: strin
     method: "POST",
     body: JSON.stringify({ content }),
   });
+}
+
+// ===== Download Files =====
+
+export async function getDownloadFiles(): Promise<{ files: DownloadFile[] }> {
+  return apiFetch("/api/downloads");
+}
+
+export async function uploadDownloadFile(file: File): Promise<{ id: number; status: string }> {
+  const token = getToken();
+  const formData = new FormData();
+  formData.append("file", file);
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${API_BASE}/api/downloads`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function deleteDownloadFile(id: number): Promise<{ status: string }> {
+  return apiFetch(`/api/downloads/${id}`, { method: "DELETE" });
+}
+
+export function getDownloadFileUrl(id: number): string {
+  return `${API_BASE}/api/downloads/${id}/file`;
 }

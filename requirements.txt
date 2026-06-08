@@ -17,15 +17,17 @@ openai>=1.10.0
 
 # 向量数据库与嵌入
 chromadb>=0.4.0
-sentence-transformers>=2.2.0
+onnxruntime>=1.16.0
+tokenizers>=0.13.0
+huggingface-hub>=0.16.0
 
 # 数据处理
 PyMuPDF>=1.23.0
 unstructured>=0.12.0
 
-# OCR（扫描型 PDF 支持）
-paddlepaddle>=2.6.0,<3.0.0
-paddleocr>=2.7.0,<3.0.0
+# OCR（扫描型 PDF 支持，CPU 版本，不要用 3.x — 会拉入 torch/PaddleX）
+paddlepaddle>=2.6.0
+paddleocr>=2.8.0,<3.0.0
 
 # 数据库
 PyMySQL>=1.1.0
@@ -36,6 +38,8 @@ cryptography>=41.0.0
 pyyaml>=6.0
 python-dotenv>=1.0.0
 pydantic>=2.0.0
+bcrypt>=4.0.0
+PyJWT>=2.8.0
 
 # 测试
 pytest>=7.4.0

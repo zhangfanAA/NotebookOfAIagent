@@ -12,13 +12,6 @@ LangGraph 图组装与状态管理
   grade → (no, loops >= max) → generate（强制兜底）
 """
 
-from langgraph.graph import StateGraph, END
-
-from src.rag.state import AgentState
-from src.rag.retrieve import retrieve_node
-from src.rag.grade import grade_node
-from src.rag.generate import generate_node
-from src.rag.rewrite import rewrite_node
 from src.logger import get_logger
 
 logger = get_logger("rag.graph")
@@ -48,13 +41,20 @@ def _should_generate(state: AgentState) -> str:
     return "rewrite"
 
 
-def build_graph() -> StateGraph:
+def build_graph():
     """
     构建 LangGraph 状态机
 
     Returns:
         编译好的 LangGraph 图，可直接调用 .invoke()
     """
+    from langgraph.graph import StateGraph, END
+    from src.rag.state import AgentState
+    from src.rag.retrieve import retrieve_node
+    from src.rag.grade import grade_node
+    from src.rag.generate import generate_node
+    from src.rag.rewrite import rewrite_node
+
     graph = StateGraph(AgentState)
 
     # 添加节点

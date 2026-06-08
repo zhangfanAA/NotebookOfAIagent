@@ -78,7 +78,7 @@ def generate_node(state: AgentState) -> dict:
             answer = llm.chat(
                 messages=[{"role": "user", "content": FALLBACK_PROMPT.format(question=question)}],
                 temperature=0.3,
-                max_tokens=512,
+                max_tokens=2048,
             )
         except Exception as e:
             logger.error("[生成节点] 兜底回答生成失败: %s", str(e))
@@ -129,7 +129,7 @@ def generate_node(state: AgentState) -> dict:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
-            max_tokens=2048,
+            max_tokens=4096,
         )
     except Exception as e:
         logger.error("[生成节点] LLM 调用失败: %s", str(e))

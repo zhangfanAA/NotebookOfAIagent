@@ -152,7 +152,7 @@ export function ChatArea({ sessionId, messages, setMessages, onMobileMenuOpen, p
           <div className="flex h-full flex-col items-center justify-center text-muted-foreground">
             <div className="text-6xl mb-4">📚</div>
             <h2 className="text-xl font-semibold mb-2">智能学习助手</h2>
-            <p className="text-sm">上传课件，开始你的学习之旅</p>
+            <p className="text-sm">上传文件，开始你的学习之旅</p>
           </div>
         ) : (
           <div className="mx-auto max-w-3xl space-y-4">

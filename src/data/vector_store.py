@@ -4,52 +4,102 @@
 任务: TASK-DATA-004, TASK-FEAT-004
 
 封装 Chroma 向量库的初始化、入库、检索操作。
-使用中文优化嵌入模型 BAAI/bge-small-zh-v1.5。
-
-注意: sentence_transformers 必须在 PyTorch 与其他原生库交互前加载，
-否则 Windows 上会出现 segfault。因此模型在模块导入时即预加载。
+使用 ONNX Runtime 推理 BAAI/bge-small-zh-v1.5 嵌入模型（轻量，无需 torch）。
 """
 
 import os
+import numpy as np
+
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-
-# === 必须在 chromadb 等其他原生库之前加载 PyTorch 模型 ===
-from sentence_transformers import SentenceTransformer
-_CHINESE_MODEL = SentenceTransformer("BAAI/bge-small-zh-v1.5")
-# ===========================================================
-
-import chromadb
-from chromadb.config import Settings
-from functools import lru_cache
 
 from src.config import get_config
 from src.logger import get_logger
 
 logger = get_logger("data.vector_store")
 
-# 全局单例
+# 懒加载单例
+_embedder = None
 _chroma_client = None
 _collection = None
 _search_cache = {}
 _cache_max_size = 100
 
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "models", "bge-small-zh-v1.5-onnx")
+
+
+def _get_embedder():
+    """懒加载 ONNX 嵌入器（首次调用时加载，~100MB）"""
+    global _embedder
+    if _embedder is not None:
+        return _embedder
+
+    import onnxruntime as ort
+    from tokenizers import Tokenizer
+
+    if not os.path.exists(os.path.join(MODEL_DIR, "model.onnx")):
+        raise FileNotFoundError(
+            f"ONNX 模型未找到: {MODEL_DIR}\n"
+            "请先运行模型导出脚本。"
+        )
+
+    logger.info("加载 ONNX 嵌入模型: %s", MODEL_DIR)
+    tokenizer = Tokenizer.from_file(os.path.join(MODEL_DIR, "tokenizer.json"))
+    tokenizer.enable_truncation(max_length=512)
+    tokenizer.enable_padding(length=512)
+    # 禁用内存 arena，避免 ONNX 推理后内存不释放（从 2.3GB 降到 ~100MB）
+    opts = ort.SessionOptions()
+    opts.enable_cpu_mem_arena = False
+    session = ort.InferenceSession(
+        os.path.join(MODEL_DIR, "model.onnx"),
+        sess_options=opts,
+        providers=["CPUExecutionProvider"],
+    )
+    _embedder = {"tokenizer": tokenizer, "session": session}
+    logger.info("ONNX 嵌入模型加载完成")
+    return _embedder
+
+
+def _encode(texts: list) -> list:
+    """批量文本向量化（ONNX 推理）"""
+    embedder = _get_embedder()
+    tokenizer = embedder["tokenizer"]
+    session = embedder["session"]
+
+    encoded = tokenizer.encode_batch(texts)
+    input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
+    attention_mask = np.array([e.attention_mask for e in encoded], dtype=np.int64)
+    token_type_ids = np.zeros_like(input_ids)
+
+    outputs = session.run(None, {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "token_type_ids": token_type_ids,
+    })
+
+    last_hidden = outputs[0]
+    mask = attention_mask[:, :, np.newaxis]
+    pooled = (last_hidden * mask).sum(axis=1) / mask.sum(axis=1)
+    norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+    embeddings = pooled / norms
+    return embeddings.tolist()
+
 
 def embed_texts(texts: list) -> list:
-    """批量文本向量化（中文模型）"""
-    embeddings = _CHINESE_MODEL.encode(texts, normalize_embeddings=True)
-    return embeddings.tolist()
+    """批量文本向量化"""
+    return _encode(texts)
 
 
 def embed_query(text: str) -> list:
     """单条查询向量化"""
-    embedding = _CHINESE_MODEL.encode([text], normalize_embeddings=True)
-    return embedding[0].tolist()
+    return _encode([text])[0]
 
 
-def get_chroma_client() -> chromadb.ClientAPI:
+def get_chroma_client():
     """获取 Chroma 客户端单例（本地持久化）"""
     global _chroma_client
     if _chroma_client is None:
+        import chromadb
+        from chromadb.config import Settings
         config = get_config()["vector_store"]
         persist_dir = config["persist_dir"]
         logger.info("初始化 Chroma 客户端: persist_dir=%s", persist_dir)
@@ -60,7 +110,7 @@ def get_chroma_client() -> chromadb.ClientAPI:
     return _chroma_client
 
 
-def get_collection(user_id: int = None, name: str = None) -> chromadb.Collection:
+def get_collection(user_id: int = None, name: str = None):
     """
     获取或创建集合
 
@@ -101,13 +151,11 @@ def ingest_chunks(chunks: list, user_id: int = None, collection_name: str = None
 
     collection = get_collection(user_id=user_id, name=collection_name)
 
-    # 增量更新：先删除同名文件的旧 chunks
     if replace and chunks:
         source_name = chunks[0].get("source", "")
         if source_name:
             delete_by_source(source_name, user_id=user_id, collection_name=collection_name)
 
-    # 准备数据
     ids = [c["chunk_id"] for c in chunks]
     documents = [c["content"] for c in chunks]
     metadatas = [
@@ -119,8 +167,7 @@ def ingest_chunks(chunks: list, user_id: int = None, collection_name: str = None
         for c in chunks
     ]
 
-    # 批量入库（手动向量化后传入 embeddings）
-    batch_size = 200
+    batch_size = 50
     for i in range(0, len(chunks), batch_size):
         end = min(i + batch_size, len(chunks))
         batch_docs = documents[i:end]
@@ -138,23 +185,10 @@ def ingest_chunks(chunks: list, user_id: int = None, collection_name: str = None
 
 
 def delete_by_source(source_name: str, user_id: int = None, collection_name: str = None) -> int:
-    """
-    删除指定来源文件的所有 chunks
-
-    Args:
-        source_name: 文件名
-        user_id: 用户 ID，用于定位正确的 collection
-        collection_name: 集合名称，显式指定时忽略 user_id
-
-    Returns:
-        删除的块数
-    """
+    """删除指定来源文件的所有 chunks"""
     collection = get_collection(user_id=user_id, name=collection_name)
     try:
-        results = collection.get(
-            where={"source": source_name},
-            include=[],
-        )
+        results = collection.get(where={"source": source_name}, include=[])
         if results and results["ids"]:
             count = len(results["ids"])
             collection.delete(ids=results["ids"])
@@ -167,27 +201,10 @@ def delete_by_source(source_name: str, user_id: int = None, collection_name: str
 
 
 def search(query: str, user_id: int = None, top_k: int = None) -> list:
-    """
-    向量相似度检索（带缓存）
-
-    Args:
-        query: 查询文本
-        user_id: 用户 ID，用于检索该用户的独立 collection
-        top_k: 返回数量，默认从配置读取
-
-    Returns:
-        [
-            {
-                "content": str,         # 文档片段内容
-                "metadata": dict,       # 元数据
-                "score": float          # 相似度分数 (0-1, 越高越相关)
-            }
-        ]
-    """
+    """向量相似度检索（带缓存）"""
     if top_k is None:
         top_k = get_config()["agent"]["retrieve_top_k"]
 
-    # 检查缓存（含 user_id 隔离）
     cache_key = f"{user_id}:{query}:{top_k}"
     if cache_key in _search_cache:
         logger.debug("缓存命中: query='%s'", query[:50])
@@ -195,12 +212,10 @@ def search(query: str, user_id: int = None, top_k: int = None) -> list:
 
     collection = get_collection(user_id=user_id)
 
-    # 检查向量库是否为空
     if collection.count() == 0:
         logger.warning("向量库为空，无法检索")
         return []
 
-    # 检索（手动向量化 query）
     query_embedding = embed_query(query)
     results = collection.query(
         query_embeddings=[query_embedding],
@@ -208,14 +223,13 @@ def search(query: str, user_id: int = None, top_k: int = None) -> list:
         include=["documents", "metadatas", "distances"],
     )
 
-    # 整理结果（Chroma 返回的 distance 越小越相似，转换为 score）
     search_results = []
     for doc, meta, dist in zip(
         results["documents"][0],
         results["metadatas"][0],
         results["distances"][0],
     ):
-        score = max(0.0, 1.0 - dist)  # cosine distance → similarity score
+        score = max(0.0, 1.0 - dist)
         search_results.append({
             "content": doc,
             "metadata": meta,
@@ -226,9 +240,7 @@ def search(query: str, user_id: int = None, top_k: int = None) -> list:
                  query[:50], len(search_results),
                  search_results[0]["score"] if search_results else 0)
 
-    # 存入缓存（限制大小）
     if len(_search_cache) >= _cache_max_size:
-        # 删除最早的缓存项
         oldest_key = next(iter(_search_cache))
         del _search_cache[oldest_key]
     _search_cache[cache_key] = search_results

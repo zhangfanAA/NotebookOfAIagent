@@ -222,4 +222,12 @@ export interface SiteMessage {
 
 // ===== Panel State =====
 
-export type PanelType = "mindmap" | "quiz" | "flashcard" | "stats" | "compare" | "settings" | "admin" | "messages" | null;
+export type PanelType = "mindmap" | "quiz" | "flashcard" | "stats" | "compare" | "download" | "settings" | "admin" | "messages" | null;
+
+export interface DownloadFile {
+  id: number;
+  file_name: string;
+  file_size: number;
+  uploaded_by: number | null;
+  uploaded_at: string;
+}

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import json
@@ -9,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
@@ -46,7 +47,7 @@ security = HTTPBearer(auto_error=False)
 # 速率限制配置
 RATE_LIMIT_WINDOW = 60  # 秒
 RATE_LIMIT_MAX_REQUESTS = 30  # 每窗口最大请求数
-MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100MB
 
 # 速率限制存储
 _rate_limit_store = defaultdict(list)
@@ -381,7 +382,7 @@ async def chat(request: Request, body: ChatRequest, user = Depends(get_current_u
 
 @app.post("/api/upload")
 async def upload_document(request: Request, file: UploadFile = File(...), user = Depends(get_current_user)):
-    """上传文档（需要认证）"""
+    """上传文档（需要认证，处理在线程池中执行不阻塞事件循环）"""
     check_rate_limit(request.client.host)
 
     if not file.filename:
@@ -396,14 +397,26 @@ async def upload_document(request: Request, file: UploadFile = File(...), user =
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
+
+    def _do_upload():
+        try:
+            rag = get_rag()
+            return rag.upload_document(tmp_path, original_filename=file.filename, user_id=user["user_id"])
+        finally:
+            os.unlink(tmp_path)
+
     try:
-        rag = get_rag()
-        result = rag.upload_document(tmp_path, original_filename=file.filename, user_id=user["user_id"])
+        result = await asyncio.to_thread(_do_upload)
         if result["status"] == "error":
             raise HTTPException(status_code=400, detail=result["message"])
         return result
-    finally:
-        os.unlink(tmp_path)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 确保临时文件被清理
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/sessions")
@@ -440,7 +453,7 @@ async def get_session_history(sid: str, user = Depends(get_current_user)):
 async def delete_session(sid: str, user = Depends(get_current_user)):
     """删除会话"""
     rag = get_rag()
-    success = rag.delete_session(sid)
+    success = rag.delete_session(sid, user_id=user["user_id"])
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "deleted", "session_id": sid}
@@ -507,10 +520,12 @@ async def generate_content(request: Request, body: GenerateRequest, user = Depen
         raise HTTPException(status_code=400, detail="请至少选择一个文件")
     if body.output_type not in ("mindmap", "notes"):
         raise HTTPException(status_code=400, detail="output_type 必须为 mindmap 或 notes")
-    rag = get_rag()
     from src.rag.llm_client import LLMClient
     user_llm = LLMClient.for_user(user["user_id"])
-    result = rag.generate_content(body.file_names, body.user_prompt, body.output_type, llm_client=user_llm)
+    rag = get_rag()
+    result = await asyncio.to_thread(
+        rag.generate_content, body.file_names, body.user_prompt, body.output_type, user_llm
+    )
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["message"])
     return result
@@ -561,10 +576,12 @@ async def generate_quiz(request: Request, body: QuizRequest, user = Depends(get_
     check_rate_limit(request.client.host)
     if not body.file_names:
         raise HTTPException(status_code=400, detail="请至少选择一个文件")
-    rag = get_rag()
     from src.rag.llm_client import LLMClient
     user_llm = LLMClient.for_user(user["user_id"])
-    result = rag.generate_quiz(body.file_names, body.num_questions, body.difficulty, body.qtypes, llm_client=user_llm)
+    rag = get_rag()
+    result = await asyncio.to_thread(
+        rag.generate_quiz, body.file_names, body.num_questions, body.difficulty, body.qtypes, user_llm
+    )
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["message"])
     return result
@@ -574,10 +591,12 @@ async def generate_quiz(request: Request, body: QuizRequest, user = Depends(get_
 async def check_quiz_answer(request: Request, body: QuizCheckRequest, user = Depends(get_current_user)):
     """判分"""
     check_rate_limit(request.client.host)
-    rag = get_rag()
     from src.rag.llm_client import LLMClient
     user_llm = LLMClient.for_user(user["user_id"])
-    result = rag.check_quiz_answer(body.question, body.user_answer, llm_client=user_llm)
+    rag = get_rag()
+    result = await asyncio.to_thread(
+        rag.check_quiz_answer, body.question, body.user_answer, user_llm
+    )
     return result
 
 
@@ -626,10 +645,12 @@ async def generate_flashcards(request: Request, body: FlashcardRequest, user = D
     check_rate_limit(request.client.host)
     if not body.file_names:
         raise HTTPException(status_code=400, detail="请至少选择一个文件")
-    rag = get_rag()
     from src.rag.llm_client import LLMClient
     user_llm = LLMClient.for_user(user["user_id"])
-    result = rag.generate_flashcards(body.file_names, body.num_cards, body.topic_focus, llm_client=user_llm)
+    rag = get_rag()
+    result = await asyncio.to_thread(
+        rag.generate_flashcards, body.file_names, body.num_cards, body.topic_focus, user_llm
+    )
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["message"])
     return result
@@ -680,10 +701,12 @@ async def compare_documents(request: Request, body: CompareRequest, user = Depen
     check_rate_limit(request.client.host)
     if len(body.file_names) < 2:
         raise HTTPException(status_code=400, detail="请至少选择两个文件")
-    rag = get_rag()
     from src.rag.llm_client import LLMClient
     user_llm = LLMClient.for_user(user["user_id"])
-    result = rag.compare_documents(body.file_names, body.focus, llm_client=user_llm)
+    rag = get_rag()
+    result = await asyncio.to_thread(
+        rag.compare_documents, body.file_names, body.focus, user_llm
+    )
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["message"])
     return result
@@ -1104,6 +1127,41 @@ async def admin_set_registration(body: RegistrationSettingRequest, user = Depend
     return {"allow_registration": body.allow_registration}
 
 
+@app.get("/api/admin/settings/paddle-ocr")
+async def admin_get_paddle_ocr(user = Depends(get_admin_user)):
+    """获取 PaddleOCR 开关状态（管理员）"""
+    from src.database.global_config_repo import GlobalConfigRepository
+    enabled = GlobalConfigRepository().get_paddle_ocr_enabled()
+    return {"enabled": enabled}
+
+
+class PaddleOcrSettingRequest(BaseModel):
+    enabled: bool
+
+
+@app.put("/api/admin/settings/paddle-ocr")
+async def admin_set_paddle_ocr(body: PaddleOcrSettingRequest, user = Depends(get_admin_user)):
+    """设置 PaddleOCR 开关（管理员）"""
+    from src.database.global_config_repo import GlobalConfigRepository
+    GlobalConfigRepository().set_paddle_ocr_enabled(body.enabled)
+    return {"enabled": body.enabled}
+
+
+@app.get("/api/settings/paddle-ocr")
+async def get_paddle_ocr_status():
+    """获取 PaddleOCR 开关状态（公开，无需认证）"""
+    from src.database.global_config_repo import GlobalConfigRepository
+    enabled = GlobalConfigRepository().get_paddle_ocr_enabled()
+    return {"enabled": enabled}
+
+
+@app.get("/api/settings/paddle-ocr/gpu")
+async def get_paddle_ocr_gpu_status():
+    """获取 PaddleOCR GPU 状态（公开，无需认证）"""
+    from src.data.pdf_parser import get_device_info
+    return get_device_info()
+
+
 # ===== 公开接口 =====
 
 @app.get("/api/settings/registration")
@@ -1237,3 +1295,84 @@ async def mark_all_read(user = Depends(get_current_user)):
     from src.database.message_repo import MessageRepository
     count = MessageRepository().mark_all_read(user["user_id"])
     return {"marked": count}
+
+
+# ===== 下载文件管理 =====
+
+DOWNLOAD_DIR = os.path.join(get_config()["data_dir"], "downloads")
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+
+@app.get("/api/downloads")
+async def list_download_files(user = Depends(get_current_user)):
+    """列出所有可下载文件"""
+    from src.database.download_repo import DownloadFileRepository
+    files = DownloadFileRepository().list_all()
+    for f in files:
+        if f.get("uploaded_at"):
+            f["uploaded_at"] = str(f["uploaded_at"])
+    return {"files": files}
+
+
+@app.post("/api/downloads")
+async def upload_download_file(request: Request, file: UploadFile = File(...), user = Depends(get_admin_user)):
+    """管理员上传文件到下载区"""
+    check_rate_limit(request.client.host)
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="文件大小超过限制（最大 100MB）")
+
+    # 保存文件
+    safe_name = file.filename or "unnamed"
+    file_path = os.path.join(DOWNLOAD_DIR, safe_name)
+    # 同名文件处理
+    if os.path.exists(file_path):
+        name, ext = os.path.splitext(safe_name)
+        import time as _time
+        safe_name = f"{name}_{int(_time.time())}{ext}"
+        file_path = os.path.join(DOWNLOAD_DIR, safe_name)
+
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    from src.database.download_repo import DownloadFileRepository
+    file_id = DownloadFileRepository().create(
+        file_name=safe_name,
+        file_path=file_path,
+        file_size=len(content),
+        uploaded_by=user["user_id"],
+    )
+    return {"status": "ok", "id": file_id}
+
+
+@app.delete("/api/downloads/{file_id}")
+async def delete_download_file(file_id: int, user = Depends(get_admin_user)):
+    """管理员删除下载文件"""
+    from src.database.download_repo import DownloadFileRepository
+    repo = DownloadFileRepository()
+    record = repo.get_by_id(file_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    # 删除物理文件
+    if record.get("file_path") and os.path.exists(record["file_path"]):
+        os.unlink(record["file_path"])
+
+    repo.delete(file_id)
+    return {"status": "ok"}
+
+
+@app.get("/api/downloads/{file_id}/file")
+async def download_file(file_id: int, user = Depends(get_current_user)):
+    """下载文件"""
+    from src.database.download_repo import DownloadFileRepository
+    record = DownloadFileRepository().get_by_id(file_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="文件不存在")
+    if not record.get("file_path") or not os.path.exists(record["file_path"]):
+        raise HTTPException(status_code=404, detail="文件已被删除")
+    return FileResponse(
+        path=record["file_path"],
+        filename=record["file_name"],
+        media_type="application/octet-stream",
+    )

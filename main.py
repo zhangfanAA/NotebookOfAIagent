@@ -45,6 +45,14 @@ def main():
         # 启动时自动初始化/迁移数据库表
         db = DBManager()
         db.init_tables()
+        # 清理旧版共享聊天记录向量集合（仅需执行一次，取消注释运行后恢复）
+        # try:
+        #     from src.rag.chat_history_store import clear_legacy_collection
+        #     cleared = clear_legacy_collection()
+        #     if cleared > 0:
+        #         print(f"已清理旧版聊天向量集合: {cleared} 条记录")
+        # except Exception as e:
+        #     print(f"清理旧版聊天向量跳过: {e}")
         # 回填旧文档全文（延迟执行，等 uvicorn 完成 import 后再跑）
         import threading
         def _backfill():
@@ -68,6 +76,11 @@ def main():
         from src.database.db_manager import DBManager
         db = DBManager()
         db.init_tables()
+        # try:
+        #     from src.rag.chat_history_store import clear_legacy_collection
+        #     clear_legacy_collection()
+        # except Exception:
+        #     pass
         print("数据库表初始化完成")
 
     elif args.command == "check":

@@ -1,9 +1,13 @@
 """
-聊天记录向量存储模块
+聊天记录向量存储模块（按用户隔离版）
 负责: RAG
 
-将聊天问答对存入独立的 Chroma 集合（与 PDF 文档向量分离），
-支持语义检索历史对话，增强多轮对话记忆。
+将聊天问答对存入按用户隔离的 Chroma 集合:
+- 知识库文档: docs_{user_id}  （vector_store.py）
+- 聊天记录:   chat_{user_id}  （本模块）
+
+同一个用户的不同会话通过 session_id 元数据区分。
+不同用户之间数据完全隔离，互不干扰。
 """
 
 import hashlib
@@ -14,15 +18,21 @@ from src.logger import get_logger
 
 logger = get_logger("rag.chat_history_store")
 
-# 聊天记录专用集合名
-COLLECTION_NAME = "chat_history"
+# 旧版共享集合名（迁移清理用）
+_LEGACY_COLLECTION_NAME = "chat_history"
 
 
-def _get_collection():
-    """获取聊天记录集合"""
+def _collection_name(user_id: int) -> str:
+    """按用户生成集合名: chat_{user_id}"""
+    return f"chat_{user_id}"
+
+
+def _get_collection(user_id: int):
+    """获取指定用户的聊天记录集合"""
+    name = _collection_name(user_id)
     client = get_chroma_client()
     return client.get_or_create_collection(
-        name=COLLECTION_NAME,
+        name=name,
         metadata={"hnsw:space": "cosine"},
     )
 
@@ -42,14 +52,16 @@ def store_qa(session_id: str, question: str, answer: str, sources: list = None, 
         question: 用户问题
         answer: 助手回答
         sources: 引用来源列表（可选）
-        user_id: 用户 ID（用于按用户隔离）
+        user_id: 用户 ID（用于按用户隔离集合）
     """
-    collection = _get_collection()
+    if user_id is None:
+        logger.warning("store_qa 缺少 user_id，跳过存储")
+        return
 
-    # 将问答对组合为一个文档，用于语义检索
+    collection = _get_collection(user_id)
+
     doc_text = f"问题：{question}\n回答：{answer}"
 
-    # 来源摘要
     source_summary = ""
     if sources:
         source_parts = [f"{s.get('source', '')}第{s.get('page', '?')}页" for s in sources[:3]]
@@ -61,13 +73,10 @@ def store_qa(session_id: str, question: str, answer: str, sources: list = None, 
     metadata = {
         "session_id": session_id,
         "question": question,
-        "answer": answer[:500],  # 元数据中存摘要
+        "answer": answer[:500],
         "sources": source_summary,
         "timestamp": time.time(),
-        "type": "chat_history",
     }
-    if user_id is not None:
-        metadata["user_id"] = str(user_id)
 
     collection.add(
         ids=[doc_id],
@@ -75,43 +84,39 @@ def store_qa(session_id: str, question: str, answer: str, sources: list = None, 
         documents=[doc_text],
         metadatas=[metadata],
     )
-    logger.debug("聊天记录已存储: session=%s user_id=%s question='%s'", session_id, user_id, question[:50])
+    logger.debug("聊天记录已存储: user=%d session=%s question='%s'", user_id, session_id, question[:50])
 
 
 def search_history(query: str, top_k: int = 5, exclude_session: str = None, user_id: int = None) -> list:
     """
-    语义检索历史聊天记录
+    语义检索当前用户的历史聊天记录
 
     Args:
         query: 查询文本
         top_k: 返回数量
         exclude_session: 排除的会话 ID（避免重复检索当前会话）
-        user_id: 用户 ID（用于按用户隔离，None 时不过滤）
+        user_id: 用户 ID（必须传入，否则返回空）
 
     Returns:
         [{"question": str, "answer": str, "session_id": str, "score": float, "sources": str}]
     """
-    collection = _get_collection()
+    if user_id is None:
+        logger.warning("search_history 缺少 user_id，跳过检索")
+        return []
+
+    collection = _get_collection(user_id)
 
     if collection.count() == 0:
         return []
 
-    # 构建过滤条件
     where_filter = None
-    conditions = []
-    if user_id is not None:
-        conditions.append({"user_id": str(user_id)})
     if exclude_session:
-        conditions.append({"session_id": {"$ne": exclude_session}})
-    if len(conditions) == 1:
-        where_filter = conditions[0]
-    elif len(conditions) > 1:
-        where_filter = {"$and": conditions}
+        where_filter = {"session_id": {"$ne": exclude_session}}
 
     query_embedding = embed_query(query)
     query_params = {
         "query_embeddings": [query_embedding],
-        "n_results": min(top_k * 2, collection.count()),  # 多取一些，过滤后可能不够
+        "n_results": min(top_k * 2, collection.count()),
         "include": ["metadatas", "distances"],
     }
     if where_filter:
@@ -133,9 +138,13 @@ def search_history(query: str, top_k: int = 5, exclude_session: str = None, user
     return history[:top_k]
 
 
-def delete_by_session(session_id: str) -> int:
+def delete_by_session(session_id: str, user_id: int = None) -> int:
     """删除指定会话的所有聊天记录"""
-    collection = _get_collection()
+    if user_id is None:
+        logger.warning("delete_by_session 缺少 user_id，跳过")
+        return 0
+
+    collection = _get_collection(user_id)
     try:
         results = collection.get(
             where={"session_id": session_id},
@@ -144,50 +153,58 @@ def delete_by_session(session_id: str) -> int:
         if results and results["ids"]:
             count = len(results["ids"])
             collection.delete(ids=results["ids"])
-            logger.info("删除会话聊天记录: session=%s count=%d", session_id, count)
+            logger.info("删除会话聊天记录: user=%d session=%s count=%d", user_id, session_id, count)
             return count
         return 0
     except Exception as e:
-        logger.warning("删除会话聊天记录失败: %s — %s", session_id, str(e))
+        logger.warning("删除会话聊天记录失败: session=%s — %s", session_id, str(e))
         return 0
 
 
 def delete_by_user(user_id: int) -> int:
-    """删除指定用户的所有聊天记录"""
-    collection = _get_collection()
+    """删除指定用户的整个聊天记录集合"""
+    name = _collection_name(user_id)
     try:
-        results = collection.get(
-            where={"user_id": str(user_id)},
-            include=[],
-        )
-        if results and results["ids"]:
-            count = len(results["ids"])
-            collection.delete(ids=results["ids"])
-            logger.info("删除用户聊天记录: user_id=%d count=%d", user_id, count)
-            return count
-        return 0
+        client = get_chroma_client()
+        client.delete_collection(name=name)
+        logger.info("删除用户聊天集合: %s", name)
+        return 1
     except Exception as e:
-        logger.warning("删除用户聊天记录失败: user_id=%d — %s", user_id, str(e))
+        logger.warning("删除用户聊天集合失败: %s — %s", name, str(e))
         return 0
 
 
-def clear_all() -> int:
-    """清空所有聊天记录（慎用）"""
-    collection = _get_collection()
-    count = collection.count()
-    if count > 0:
-        # 获取所有 ID 并删除
-        results = collection.get(include=[])
-        if results and results["ids"]:
-            collection.delete(ids=results["ids"])
-    logger.info("已清空所有聊天记录: count=%d", count)
-    return count
+def clear_legacy_collection() -> int:
+    """
+    清理旧版共享 chat_history 集合（一次性迁移用）
+
+    旧版所有用户共用一个 chat_history 集合，
+    新版每个用户独立 chat_{user_id} 集合。
+    调用此函数删除旧集合。
+    """
+    try:
+        client = get_chroma_client()
+        try:
+            collection = client.get_collection(name=_LEGACY_COLLECTION_NAME)
+            count = collection.count()
+        except Exception:
+            logger.info("旧版 chat_history 集合不存在，无需清理")
+            return 0
+
+        client.delete_collection(name=_LEGACY_COLLECTION_NAME)
+        logger.info("已清理旧版 chat_history 集合: %d 条记录", count)
+        return count
+    except Exception as e:
+        logger.warning("清理旧版集合失败: %s", str(e))
+        return 0
 
 
-def get_stats() -> dict:
+def get_stats(user_id: int = None) -> dict:
     """获取聊天记录统计"""
-    collection = _get_collection()
+    if user_id is None:
+        return {"total_records": 0, "collection_name": "N/A"}
+    collection = _get_collection(user_id)
     return {
         "total_records": collection.count(),
-        "collection_name": COLLECTION_NAME,
+        "collection_name": _collection_name(user_id),
     }

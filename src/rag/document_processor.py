@@ -65,7 +65,8 @@ class DocumentProcessor:
                 result[name] = ""
                 continue
             try:
-                pages = parse_pdf(file_path)
+                result_pdf = parse_pdf(file_path)
+                pages = result_pdf["pages"]
                 full_text = "\n\n".join(p["content"] for p in pages if p.get("content"))
                 result[name] = full_text
                 logger.info("从PDF解析全文（回退）: %s → %d 字", name, len(full_text))
@@ -100,7 +101,8 @@ class DocumentProcessor:
                 logger.warning("回填跳过: 文件不存在 %s", name)
                 continue
             try:
-                pages = parse_pdf(file_path)
+                result_pdf = parse_pdf(file_path)
+                pages = result_pdf["pages"]
                 full_text = "\n\n".join(p["content"] for p in pages if p.get("content"))
                 if full_text:
                     self._doc_repo.store_full_text(doc_id, full_text)

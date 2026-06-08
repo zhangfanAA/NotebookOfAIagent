@@ -18,6 +18,10 @@ from src.logger import get_logger
 
 logger = get_logger("rag.llm_client")
 
+# LLMClient 实例缓存 {user_id: (client, created_at)}
+_client_cache: dict[int, tuple] = {}
+_CLIENT_CACHE_TTL = 300  # 5 分钟过期
+
 
 class LLMClient:
     """
@@ -85,17 +89,21 @@ class LLMClient:
     @classmethod
     def for_user(cls, user_id: int) -> "LLMClient":
         """
-        根据用户 ID 创建 LLMClient。
-
-        如果全局 provider 是 balance → 使用余额模型（global_config.balance_*）
-        如果用户有自己的 key → 使用用户私有 key
-        否则 → 使用全局默认（global_config.cloud_*）
+        根据用户 ID 创建或复用 LLMClient（带缓存，避免每次请求重建）。
         """
+        now = time.time()
+        cached = _client_cache.get(user_id)
+        if cached:
+            client, created_at = cached
+            if now - created_at < _CLIENT_CACHE_TTL:
+                return client
+
         client = cls()
 
         # 全局 provider 为 balance 时，所有用户都走余额模型
         if client._provider == "balance":
             logger.info("LLMClient.for_user(%d): 使用余额模型, model=%s", user_id, client._cloud_model)
+            _client_cache[user_id] = (client, now)
             return client
 
         # 全局 provider 为 cloud 时，检查用户是否有自己的 key
@@ -117,6 +125,7 @@ class LLMClient:
             except Exception as e:
                 logger.warning("LLMClient.for_user(%d): 读取用户设置失败: %s", user_id, str(e))
 
+        _client_cache[user_id] = (client, now)
         return client
 
     def _read_provider_from_db(self) -> str:
@@ -222,7 +231,7 @@ class LLMClient:
         self,
         messages: list,
         temperature: float = 0.1,
-        max_tokens: int = 2048,
+        max_tokens: int = 4096,
         use_fallback: bool = False,
     ) -> str:
         """
@@ -251,7 +260,7 @@ class LLMClient:
         self,
         messages: list,
         temperature: float = 0.3,
-        max_tokens: int = 2048,
+        max_tokens: int = 4096,
     ):
         """
         流式对话调用（生成器）

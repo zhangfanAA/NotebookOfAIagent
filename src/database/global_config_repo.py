@@ -73,3 +73,13 @@ class GlobalConfigRepository:
         """设置注册开关"""
         self.update(3, api_key="1" if allowed else "0")
         logger.info("注册开关已设置为: %s", "开启" if allowed else "关闭")
+
+    def get_paddle_ocr_enabled(self) -> bool:
+        """获取 PaddleOCR 开关状态"""
+        cfg = self.get(3)
+        return cfg.get("base_url", "1") == "1"
+
+    def set_paddle_ocr_enabled(self, enabled: bool):
+        """设置 PaddleOCR 开关"""
+        self.update(3, base_url="1" if enabled else "0")
+        logger.info("PaddleOCR 开关已设置为: %s", "开启" if enabled else "关闭")

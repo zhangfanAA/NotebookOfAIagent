@@ -9,6 +9,7 @@ import { QuizPanel } from "@/components/quiz-panel";
 import { FlashcardPanel } from "@/components/flashcard-panel";
 import { StatsPanel } from "@/components/stats-panel";
 import { ComparePanel } from "@/components/compare-panel";
+import { DownloadPanel } from "@/components/download-panel";
 import { SettingsPanel } from "@/components/settings-panel";
 import { AdminPanel } from "@/components/admin-panel";
 import { MessagePanel } from "@/components/message-panel";
@@ -104,7 +105,7 @@ export default function Home() {
     document.addEventListener("mouseup", onMouseUp);
   }, [panelWidth]);
 
-  const isFullPage = activePanel === "stats" || activePanel === "compare" || activePanel === "settings" || activePanel === "admin" || activePanel === "messages";
+  const isFullPage = activePanel === "stats" || activePanel === "compare" || activePanel === "download" || activePanel === "settings" || activePanel === "admin" || activePanel === "messages";
   const isRightPanel = activePanel === "mindmap" || activePanel === "quiz" || activePanel === "flashcard";
 
   if (!authChecked) return null;
@@ -152,6 +153,7 @@ export default function Home() {
           <div className="flex-1 overflow-y-auto">
             {activePanel === "stats" && <StatsPanel sessionId={sessionId} />}
             {activePanel === "compare" && <ComparePanel />}
+            {activePanel === "download" && <DownloadPanel />}
             {activePanel === "settings" && <SettingsPanel />}
             {activePanel === "admin" && <AdminPanel />}
             {activePanel === "messages" && <MessagePanel userRole={getRole() || 1} onUnreadChange={fetchUnread} />}

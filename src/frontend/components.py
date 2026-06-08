@@ -2,10 +2,11 @@
 智能学习助手 — 可复用 UI 组件
 负责: FULL
 
-包含: 来源展示、LaTeX 渲染、主题 CSS、错误处理、健康检查
+包含: 来源展示、LaTeX 渲染、主题 CSS、错误处理、健康检查、快捷键
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 
 def get_friendly_error(error_msg: str) -> str:

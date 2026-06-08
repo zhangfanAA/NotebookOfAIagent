@@ -7,8 +7,6 @@ RAG 查询引擎模块
 
 import re
 
-from src.rag.graph import get_graph
-from src.rag.state import AgentState
 from src.rag.llm_client import LLMClient
 from src.rag.diagnosis import DiagnosisEngine
 from src.rag import chat_history_store
@@ -70,31 +68,17 @@ class QueryEngine:
                 effective_question = _rewrite_with_context(question, context_messages)
                 logger.info("多轮上下文改写: '%s' → '%s'", question[:50], effective_question[:50])
 
-            # 构建记忆上下文（必须在 add_message 之前，避免当前问题重复）
+            # 构建记忆上下文（仅当前会话最近 2 轮，不跨会话检索）
             history_context = ""
             try:
                 parts = []
-
-                # 1) 语义检索跨会话历史记录
-                history = chat_history_store.search_history(
-                    effective_question, top_k=3, user_id=user_id
-                )
-                if history:
-                    for h in history:
-                        if h.get("session_id") == session_id:
-                            continue
-                        parts.append(f"[历史] 问: {h['question']}\n答: {h['answer'][:200]}")
-                    logger.info("检索到 %d 条跨会话历史记录", len(history))
-
-                # 2) 语义搜索无结果时，兜底注入当前会话最近 2 轮对话
-                if not parts:
-                    recent_qa = self._session_mgr.get_recent_context(session_id, turns=2)
-                    if recent_qa:
-                        session_parts = []
-                        for m in recent_qa:
-                            role = "学生" if m["role"] == "user" else "助手"
-                            session_parts.append(f"{role}: {m['content'][:200]}")
-                        parts.append(f"[当前会话最近对话]\n" + "\n".join(session_parts))
+                recent_qa = self._session_mgr.get_recent_context(session_id, turns=2)
+                if recent_qa:
+                    session_parts = []
+                    for m in recent_qa:
+                        role = "学生" if m["role"] == "user" else "助手"
+                        session_parts.append(f"{role}: {m['content'][:300]}")
+                    parts.append(f"[当前会话最近对话]\n" + "\n".join(session_parts))
 
                 if parts:
                     history_context = "\n---\n".join(parts)
@@ -112,6 +96,7 @@ class QueryEngine:
             if llm_client:
                 self._llm_client = llm_client
 
+            from src.rag.state import AgentState
             initial_state: AgentState = {
                 "question": query_for_agent,
                 "rewritten_query": None,
@@ -133,6 +118,7 @@ class QueryEngine:
             self._session_mgr.add_message(session_id, "user", question)
 
             # 执行 LangGraph Agent
+            from src.rag.graph import get_graph
             graph = get_graph()
             result = graph.invoke(initial_state)
 
@@ -221,31 +207,17 @@ class QueryEngine:
                 effective_question = _rewrite_with_context(question, context_messages)
                 context_used = True
 
-            # 构建记忆上下文（必须在 add_message 之前，避免当前问题重复）
+            # 构建记忆上下文（仅当前会话最近 2 轮，不跨会话检索）
             history_context = ""
             try:
                 parts = []
-
-                # 1) 语义检索跨会话历史记录
-                history = chat_history_store.search_history(
-                    effective_question, top_k=3, user_id=user_id
-                )
-                if history:
-                    for h in history:
-                        if h.get("session_id") == session_id:
-                            continue
-                        parts.append(f"[历史] 问: {h['question']}\n答: {h['answer'][:200]}")
-                    logger.info("检索到 %d 条跨会话历史记录", len(history))
-
-                # 2) 语义搜索无结果时，兜底注入当前会话最近 2 轮对话
-                if not parts:
-                    recent_qa = self._session_mgr.get_recent_context(session_id, turns=2)
-                    if recent_qa:
-                        session_parts = []
-                        for m in recent_qa:
-                            role = "学生" if m["role"] == "user" else "助手"
-                            session_parts.append(f"{role}: {m['content'][:200]}")
-                        parts.append(f"[当前会话最近对话]\n" + "\n".join(session_parts))
+                recent_qa = self._session_mgr.get_recent_context(session_id, turns=2)
+                if recent_qa:
+                    session_parts = []
+                    for m in recent_qa:
+                        role = "学生" if m["role"] == "user" else "助手"
+                        session_parts.append(f"{role}: {m['content'][:300]}")
+                    parts.append(f"[当前会话最近对话]\n" + "\n".join(session_parts))
 
                 if parts:
                     history_context = "\n---\n".join(parts)
@@ -262,6 +234,7 @@ class QueryEngine:
             if llm_client:
                 self._llm_client = llm_client
 
+            from src.rag.state import AgentState
             initial_state: AgentState = {
                 "question": query_for_agent,
                 "rewritten_query": None,

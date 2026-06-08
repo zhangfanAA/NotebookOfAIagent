@@ -119,11 +119,16 @@ class RAGService:
         """搜索会话"""
         return self._session_mgr.search_sessions(keyword, user_id)
 
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(self, session_id: str, user_id: int = None) -> bool:
         """删除会话（同时清理聊天记录向量）"""
         from src.rag import chat_history_store
         try:
-            chat_history_store.delete_by_session(session_id)
+            # 如果未传入 user_id，从会话记录中查询
+            if user_id is None:
+                session_info = self._session_mgr._session_repo.get_session(session_id)
+                if session_info:
+                    user_id = session_info.get("user_id")
+            chat_history_store.delete_by_session(session_id, user_id=user_id)
         except Exception as e:
             logger.warning("清理聊天向量失败: %s", str(e))
         result = self._session_mgr.delete_session(session_id)

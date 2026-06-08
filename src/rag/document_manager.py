@@ -70,7 +70,10 @@ class DocumentManager:
         try:
             # 解析 PDF
             if file_type == "pdf":
-                pages = parse_pdf(file_path)
+                result = parse_pdf(file_path)
+                pages = result["pages"]
+                ocr_skipped = result.get("ocr_skipped", False)
+                ocr_skipped_pages = result.get("ocr_skipped_pages", 0)
             else:
                 return {"status": "error", "chunks_count": 0,
                         "message": f"暂不支持的文件类型: {file_type}"}
@@ -97,11 +100,17 @@ class DocumentManager:
             self._doc_repo.mark_ready(doc_id, count)
 
             logger.info("文档上传成功: %s → %d chunks", file_name, count)
-            return {
+            response = {
                 "status": "success",
                 "chunks_count": count,
                 "message": f"文档 '{file_name}' 入库成功，共 {count} 个知识片段",
             }
+            # 如果有扫描页被跳过，添加提示信息
+            if ocr_skipped:
+                response["ocr_skipped"] = True
+                response["ocr_skipped_pages"] = ocr_skipped_pages
+                response["message"] += f"（注意：{ocr_skipped_pages} 页扫描内容因 PaddleOCR 未启用而被跳过）"
+            return response
 
         except Exception as e:
             error_msg = str(e)

@@ -7,11 +7,15 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+  DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
+import {
   Sun, Moon, Plus, Search, Trash2, Pencil, Check, X,
   Map, FileQuestion, Layers, BarChart3, GitCompare,
   Upload, FileText, Database, ChevronDown, ChevronRight,
   Download, BookOpen, Bookmark, StickyNote, Heart, Settings, LogOut,
-  Shield, Wallet, Bell,
+  Shield, Wallet, Bell, AlertTriangle,
 } from "lucide-react";
 import type { PanelType, Session, Message, Document } from "@/lib/types";
 import * as api from "@/lib/api";
@@ -42,6 +46,9 @@ export function Sidebar({
   const [documents, setDocuments] = useState<Document[]>([]);
   const [uploadFiles, setUploadFiles] = useState<FileList | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [ocrWarning, setOcrWarning] = useState<{ show: boolean; files: string[]; pages: number }>({
+    show: false, files: [], pages: 0,
+  });
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     sessions: true,
     upload: false,
@@ -131,12 +138,22 @@ export function Sidebar({
   const handleUpload = async () => {
     if (!uploadFiles?.length) return;
     setIsUploading(true);
+    const skippedFiles: string[] = [];
+    let totalSkippedPages = 0;
     try {
       for (let i = 0; i < uploadFiles.length; i++) {
-        await api.uploadDocument(uploadFiles[i]);
+        const res = await api.uploadDocument(uploadFiles[i]);
+        if (res.ocr_skipped) {
+          skippedFiles.push(uploadFiles[i].name);
+          totalSkippedPages += res.ocr_skipped_pages || 0;
+        }
       }
       setUploadFiles(null);
       await loadDocuments();
+      // 如果有扫描页被跳过，显示警告
+      if (skippedFiles.length > 0) {
+        setOcrWarning({ show: true, files: skippedFiles, pages: totalSkippedPages });
+      }
     } catch (e) {
       console.error("Upload failed:", e);
     } finally {
@@ -163,6 +180,7 @@ export function Sidebar({
     { key: "flashcard", label: "闪卡", icon: <Layers className="h-4 w-4" /> },
     { key: "stats", label: "统计", icon: <BarChart3 className="h-4 w-4" /> },
     { key: "compare", label: "对比", icon: <GitCompare className="h-4 w-4" /> },
+    { key: "download", label: "下载", icon: <Download className="h-4 w-4" /> },
   ];
 
   return (
@@ -320,7 +338,7 @@ export function Sidebar({
               className="flex w-full items-center gap-1 text-sm font-medium text-muted-foreground hover:text-foreground"
             >
               {expandedSections.upload ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-              📤 上传课件
+              📤 上传文件
             </button>
             {expandedSections.upload && (
               <div className="mt-2 space-y-2">
@@ -416,6 +434,42 @@ export function Sidebar({
         </button>
         <SystemStatus />
       </div>
+
+      {/* OCR Warning Dialog */}
+      <Dialog open={ocrWarning.show} onOpenChange={(open) => !open && setOcrWarning({ show: false, files: [], pages: 0 })}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-yellow-500" />
+              扫描页内容跳过提醒
+            </DialogTitle>
+            <DialogDescription>
+              检测到您上传的 PDF 包含扫描型（图片）页面，但当前 PaddleOCR 功能未启用，这些页面的文字内容无法被识别。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="rounded-lg bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-200 dark:border-yellow-800 p-3">
+              <p className="text-sm font-medium text-yellow-800 dark:text-yellow-200">受影响的文件：</p>
+              <ul className="mt-1 text-xs text-yellow-700 dark:text-yellow-300 space-y-0.5">
+                {ocrWarning.files.map((f, i) => (
+                  <li key={i}>• {f}</li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-yellow-700 dark:text-yellow-300">
+                共跳过 <span className="font-semibold">{ocrWarning.pages}</span> 页扫描内容
+              </p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              如需支持扫描型 PDF，请联系管理员在「用户管理 → 系统设置」中启用 PaddleOCR 功能。
+            </p>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setOcrWarning({ show: false, files: [], pages: 0 })}>
+              我知道了
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

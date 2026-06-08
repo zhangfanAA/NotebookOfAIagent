@@ -18,6 +18,9 @@ import type {
   SavedQuiz,
   SavedFlashcardSet,
   LlmSettings,
+  UserInfo,
+  UsageLogsResponse,
+  SiteMessage,
 } from "./types";
 import { getToken, removeToken } from "./auth";
 
@@ -57,8 +60,21 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 
 // ===== Auth =====
 
-export async function login(username: string, password: string): Promise<{ token: string; username: string }> {
+export async function login(username: string, password: string): Promise<{ token: string; username: string; role: number }> {
   const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function register(username: string, password: string): Promise<{ token: string; username: string; role: number }> {
+  const res = await fetch(`${API_BASE}/api/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password }),
@@ -143,7 +159,12 @@ export function chatStream(
       });
 
       if (!res.ok || !res.body) {
-        throw new Error(`HTTP ${res.status}`);
+        let detail = `HTTP ${res.status}`;
+        try {
+          const errBody = await res.json();
+          if (errBody.detail) detail = errBody.detail;
+        } catch {}
+        throw new Error(detail);
       }
 
       const reader = res.body.getReader();
@@ -467,13 +488,101 @@ export async function getLlmSettings(): Promise<LlmSettings> {
 }
 
 export async function updateLlmSettings(data: {
-  provider: "local" | "cloud";
+  provider: "local" | "cloud" | "balance";
   cloud_base_url?: string;
   cloud_api_key?: string;
   cloud_model?: string;
+  balance_api_key?: string;
+  balance_base_url?: string;
+  balance_model?: string;
 }): Promise<{ status: string; provider: string }> {
   return apiFetch("/api/settings/llm", {
     method: "PUT",
     body: JSON.stringify(data),
+  });
+}
+
+// ===== User Balance =====
+
+export async function getBalance(): Promise<{ balance: number }> {
+  return apiFetch("/api/user/balance");
+}
+
+export async function getUserUsageLogs(page = 1, size = 20): Promise<UsageLogsResponse> {
+  return apiFetch(`/api/user/usage-logs?page=${page}&size=${size}`);
+}
+
+// ===== Admin =====
+
+export async function getUsers(): Promise<{ users: UserInfo[] }> {
+  return apiFetch("/api/admin/users");
+}
+
+export async function addBalance(uid: number, amount: number): Promise<{ user_id: number; balance: number }> {
+  return apiFetch(`/api/admin/users/${uid}/balance`, {
+    method: "POST",
+    body: JSON.stringify({ amount }),
+  });
+}
+
+export async function getAdminUsageLogs(uid?: number, page = 1, size = 20): Promise<UsageLogsResponse> {
+  const params = new URLSearchParams({ page: String(page), size: String(size) });
+  if (uid) params.set("uid", String(uid));
+  return apiFetch(`/api/admin/usage-logs?${params}`);
+}
+
+export async function banUser(uid: number, banned: boolean): Promise<{ user_id: number; banned: boolean }> {
+  return apiFetch(`/api/admin/users/${uid}/ban`, {
+    method: "POST",
+    body: JSON.stringify({ banned }),
+  });
+}
+
+export async function getRegistrationSetting(): Promise<{ allow_registration: boolean }> {
+  return apiFetch("/api/admin/settings/registration");
+}
+
+export async function updateRegistrationSetting(allow: boolean): Promise<{ allow_registration: boolean }> {
+  return apiFetch("/api/admin/settings/registration", {
+    method: "PUT",
+    body: JSON.stringify({ allow_registration: allow }),
+  });
+}
+
+export async function checkRegistrationOpen(): Promise<{ allow_registration: boolean }> {
+  const res = await fetch(`${API_BASE}/api/settings/registration`);
+  if (!res.ok) throw new Error("Failed to check registration");
+  return res.json();
+}
+
+// ===== Site Messages =====
+
+export async function sendMessage(toUserId: number, content: string): Promise<{ id: number; status: string }> {
+  return apiFetch("/api/messages", {
+    method: "POST",
+    body: JSON.stringify({ to_user_id: toUserId, content }),
+  });
+}
+
+export async function getMessages(type: "inbox" | "sent", page = 1, size = 20): Promise<{ items: SiteMessage[]; total: number; page: number; size: number }> {
+  return apiFetch(`/api/messages/${type}?page=${page}&size=${size}`);
+}
+
+export async function getUnreadCount(): Promise<{ count: number }> {
+  return apiFetch("/api/messages/unread-count");
+}
+
+export async function markMessageRead(id: number): Promise<{ status: string }> {
+  return apiFetch(`/api/messages/${id}/read`, { method: "PUT" });
+}
+
+export async function markAllRead(): Promise<{ marked: number }> {
+  return apiFetch("/api/messages/read-all", { method: "PUT" });
+}
+
+export async function broadcastMessage(content: string): Promise<{ status: string; count: number }> {
+  return apiFetch("/api/messages/broadcast", {
+    method: "POST",
+    body: JSON.stringify({ content }),
   });
 }

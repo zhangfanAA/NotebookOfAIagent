@@ -169,11 +169,57 @@ export interface SavedFlashcardSet {
 // ===== Settings =====
 
 export interface LlmSettings {
-  provider: "local" | "cloud";
+  provider: "local" | "cloud" | "balance";
+  is_admin: boolean;
   local: { base_url: string; model: string };
   cloud: { base_url: string; api_key: string; model: string; api_format: string };
+  balance: { base_url: string; api_key: string; model: string };
+}
+
+// ===== User & Balance =====
+
+export interface UserInfo {
+  id: number;
+  username: string;
+  role: number;
+  banned: number;
+  balance: number;
+  last_online_at: string | null;
+  created_at: string;
+}
+
+export interface UsageLog {
+  id: number;
+  user_id: number;
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_hit_tokens: number;
+  cache_miss_tokens: number;
+  cost: number;
+  created_at: string;
+}
+
+export interface UsageLogsResponse {
+  items: UsageLog[];
+  total: number;
+  page: number;
+  size: number;
+}
+
+// ===== Site Messages =====
+
+export interface SiteMessage {
+  id: number;
+  from_user_id: number;
+  from_username?: string;
+  to_user_id: number;
+  to_username?: string;
+  content: string;
+  is_read: number;
+  created_at: string;
 }
 
 // ===== Panel State =====
 
-export type PanelType = "mindmap" | "quiz" | "flashcard" | "stats" | "compare" | "settings" | null;
+export type PanelType = "mindmap" | "quiz" | "flashcard" | "stats" | "compare" | "settings" | "admin" | "messages" | null;

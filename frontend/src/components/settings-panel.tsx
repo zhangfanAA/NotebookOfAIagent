@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Save, Check, Server, Cloud, CreditCard, Eye, EyeOff } from "lucide-react";
+import { Loader2, Save, Check, Server, Cloud, CreditCard, Eye, EyeOff, Wallet, Coins } from "lucide-react";
 import type { LlmSettings } from "@/lib/types";
 import * as api from "@/lib/api";
 
@@ -16,11 +16,20 @@ export function SettingsPanel() {
   const [saveMsg, setSaveMsg] = useState("");
 
   // 编辑状态
-  const [provider, setProvider] = useState<"local" | "cloud">("local");
+  const [provider, setProvider] = useState<"local" | "cloud" | "balance">("local");
   const [cloudUrl, setCloudUrl] = useState("");
   const [cloudKey, setCloudKey] = useState("");
   const [cloudModel, setCloudModel] = useState("");
   const [showKey, setShowKey] = useState(false);
+  const [balanceUrl, setBalanceUrl] = useState("");
+  const [balanceKey, setBalanceKey] = useState("");
+  const [balanceModel, setBalanceModel] = useState("");
+  const [showBalanceKey, setShowBalanceKey] = useState(false);
+  const [balance, setBalance] = useState<number | null>(null);
+
+  useEffect(() => {
+    api.getBalance().then((res) => setBalance(res.balance)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     api.getLlmSettings().then((res) => {
@@ -29,6 +38,9 @@ export function SettingsPanel() {
       setCloudUrl(res.cloud.base_url);
       setCloudKey(""); // 不回填密钥
       setCloudModel(res.cloud.model);
+      setBalanceUrl(res.balance.base_url);
+      setBalanceKey(""); // 不回填密钥
+      setBalanceModel(res.balance.model);
     }).catch(() => {}).finally(() => setIsLoading(false));
   }, []);
 
@@ -37,15 +49,23 @@ export function SettingsPanel() {
     setSaveMsg("");
     try {
       const data: {
-        provider: "local" | "cloud";
+        provider: "local" | "cloud" | "balance";
         cloud_base_url?: string;
         cloud_api_key?: string;
         cloud_model?: string;
+        balance_api_key?: string;
+        balance_base_url?: string;
+        balance_model?: string;
       } = { provider };
       if (provider === "cloud") {
         data.cloud_base_url = cloudUrl;
         if (cloudKey) data.cloud_api_key = cloudKey;
         data.cloud_model = cloudModel;
+      }
+      if (provider === "balance") {
+        data.balance_base_url = balanceUrl;
+        if (balanceKey) data.balance_api_key = balanceKey;
+        data.balance_model = balanceModel;
       }
       await api.updateLlmSettings(data);
       setSaveMsg("保存成功，刷新后生效");
@@ -55,7 +75,7 @@ export function SettingsPanel() {
     } finally {
       setIsSaving(false);
     }
-  }, [provider, cloudUrl, cloudKey, cloudModel]);
+  }, [provider, cloudUrl, cloudKey, cloudModel, balanceUrl, balanceKey, balanceModel]);
 
   if (isLoading) {
     return (
@@ -70,13 +90,28 @@ export function SettingsPanel() {
       <div className="mx-auto max-w-2xl space-y-6">
         <h1 className="text-2xl font-bold">⚙️ 设置</h1>
 
+        {/* 账号余额 */}
+        <Card>
+          <CardContent className="py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Wallet className="h-4 w-4 text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">账号余额</span>
+              </div>
+              <span className={`text-lg font-semibold ${balance !== null && balance <= 0 ? "text-red-500" : ""}`}>
+                {balance !== null ? `¥ ${balance.toFixed(2)}` : "-"}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* 模型提供商选择 */}
         <Card>
           <CardHeader>
             <CardTitle className="text-sm font-medium">模型提供商</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               {/* 本地模型 */}
               <button
                 onClick={() => setProvider("local")}
@@ -123,7 +158,28 @@ export function SettingsPanel() {
                 <Cloud className="h-6 w-6 mb-2 text-muted-foreground" />
                 <p className="text-sm font-medium">云端模型</p>
                 <Badge variant="outline" className="mt-1 text-[10px]">
-                  OpenAI 兼容格式
+                  自备 Key
+                </Badge>
+              </button>
+
+              {/* 余额模型 */}
+              <button
+                onClick={() => setProvider("balance")}
+                className={`relative rounded-xl border-2 p-4 text-left transition-all ${
+                  provider === "balance"
+                    ? "border-primary bg-primary/5"
+                    : "border-muted hover:border-muted-foreground/30"
+                }`}
+              >
+                {provider === "balance" && (
+                  <div className="absolute top-2 right-2">
+                    <Check className="h-4 w-4 text-primary" />
+                  </div>
+                )}
+                <Coins className="h-6 w-6 mb-2 text-muted-foreground" />
+                <p className="text-sm font-medium">余额模型</p>
+                <Badge variant="outline" className="mt-1 text-[10px]">
+                  按量扣费
                 </Badge>
               </button>
             </div>
@@ -138,7 +194,7 @@ export function SettingsPanel() {
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
-                当前支持所有 OpenAI 兼容格式的 API 服务（DeepSeek、OpenAI、Moonshot 等）
+                自备 API Key，支持所有 OpenAI 兼容格式（DeepSeek、OpenAI、Moonshot 等）
               </div>
 
               <div className="space-y-1">
@@ -185,16 +241,43 @@ export function SettingsPanel() {
                   className="h-8 text-xs"
                 />
               </div>
+            </CardContent>
+          </Card>
+        )}
 
-              {/* 使用账号余额按钮 */}
+        {/* 余额模型配置 */}
+        {provider === "balance" && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium">余额模型</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+                使用平台提供的 API 额度，按量从账号余额扣费
+              </div>
+
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">当前模型</span>
+                <span className="font-mono text-xs">{settings?.balance.model || "-"}</span>
+              </div>
+
+              <p className="text-[10px] text-muted-foreground">
+                余额模型由管理员统一配置，如需修改请联系管理员
+              </p>
+
+              {/* 余额信息 */}
               <div className="pt-2 border-t">
-                <Button variant="outline" disabled className="w-full h-8 text-xs gap-2 opacity-60">
-                  <CreditCard className="h-3.5 w-3.5" />
-                  使用账号余额
-                  <Badge variant="secondary" className="text-[10px] ml-auto">待开发</Badge>
-                </Button>
+                <div className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2">
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <CreditCard className="h-3.5 w-3.5" />
+                    当前余额
+                  </div>
+                  <span className={`text-sm font-medium ${balance !== null && balance <= 0 ? "text-red-500" : ""}`}>
+                    {balance !== null ? `¥ ${balance.toFixed(2)}` : "-"}
+                  </span>
+                </div>
                 <p className="text-[10px] text-muted-foreground mt-1 text-center">
-                  后续版本将支持账号余额直连，无需 API Key
+                  每次调用自动扣费，余额不足时请联系管理员充值
                 </p>
               </div>
             </CardContent>

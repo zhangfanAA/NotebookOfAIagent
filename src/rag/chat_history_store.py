@@ -33,7 +33,7 @@ def _make_id(session_id: str, question: str) -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
-def store_qa(session_id: str, question: str, answer: str, sources: list = None):
+def store_qa(session_id: str, question: str, answer: str, sources: list = None, user_id: int = None):
     """
     存储一条问答记录
 
@@ -42,6 +42,7 @@ def store_qa(session_id: str, question: str, answer: str, sources: list = None):
         question: 用户问题
         answer: 助手回答
         sources: 引用来源列表（可选）
+        user_id: 用户 ID（用于按用户隔离）
     """
     collection = _get_collection()
 
@@ -57,23 +58,27 @@ def store_qa(session_id: str, question: str, answer: str, sources: list = None):
     doc_id = _make_id(session_id, question)
     embedding = embed_texts([doc_text])[0]
 
+    metadata = {
+        "session_id": session_id,
+        "question": question,
+        "answer": answer[:500],  # 元数据中存摘要
+        "sources": source_summary,
+        "timestamp": time.time(),
+        "type": "chat_history",
+    }
+    if user_id is not None:
+        metadata["user_id"] = str(user_id)
+
     collection.add(
         ids=[doc_id],
         embeddings=[embedding],
         documents=[doc_text],
-        metadatas=[{
-            "session_id": session_id,
-            "question": question,
-            "answer": answer[:500],  # 元数据中存摘要
-            "sources": source_summary,
-            "timestamp": time.time(),
-            "type": "chat_history",
-        }],
+        metadatas=[metadata],
     )
-    logger.debug("聊天记录已存储: session=%s question='%s'", session_id, question[:50])
+    logger.debug("聊天记录已存储: session=%s user_id=%s question='%s'", session_id, user_id, question[:50])
 
 
-def search_history(query: str, top_k: int = 5, exclude_session: str = None) -> list:
+def search_history(query: str, top_k: int = 5, exclude_session: str = None, user_id: int = None) -> list:
     """
     语义检索历史聊天记录
 
@@ -81,6 +86,7 @@ def search_history(query: str, top_k: int = 5, exclude_session: str = None) -> l
         query: 查询文本
         top_k: 返回数量
         exclude_session: 排除的会话 ID（避免重复检索当前会话）
+        user_id: 用户 ID（用于按用户隔离，None 时不过滤）
 
     Returns:
         [{"question": str, "answer": str, "session_id": str, "score": float, "sources": str}]
@@ -90,18 +96,31 @@ def search_history(query: str, top_k: int = 5, exclude_session: str = None) -> l
     if collection.count() == 0:
         return []
 
+    # 构建过滤条件
+    where_filter = None
+    conditions = []
+    if user_id is not None:
+        conditions.append({"user_id": str(user_id)})
+    if exclude_session:
+        conditions.append({"session_id": {"$ne": exclude_session}})
+    if len(conditions) == 1:
+        where_filter = conditions[0]
+    elif len(conditions) > 1:
+        where_filter = {"$and": conditions}
+
     query_embedding = embed_query(query)
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=min(top_k, collection.count()),
-        include=["metadatas", "distances"],
-    )
+    query_params = {
+        "query_embeddings": [query_embedding],
+        "n_results": min(top_k * 2, collection.count()),  # 多取一些，过滤后可能不够
+        "include": ["metadatas", "distances"],
+    }
+    if where_filter:
+        query_params["where"] = where_filter
+
+    results = collection.query(**query_params)
 
     history = []
     for meta, dist in zip(results["metadatas"][0], results["distances"][0]):
-        # 排除当前会话
-        if exclude_session and meta.get("session_id") == exclude_session:
-            continue
         score = max(0.0, 1.0 - dist)
         history.append({
             "question": meta.get("question", ""),
@@ -111,7 +130,7 @@ def search_history(query: str, top_k: int = 5, exclude_session: str = None) -> l
             "score": score,
         })
 
-    return history
+    return history[:top_k]
 
 
 def delete_by_session(session_id: str) -> int:
@@ -131,6 +150,38 @@ def delete_by_session(session_id: str) -> int:
     except Exception as e:
         logger.warning("删除会话聊天记录失败: %s — %s", session_id, str(e))
         return 0
+
+
+def delete_by_user(user_id: int) -> int:
+    """删除指定用户的所有聊天记录"""
+    collection = _get_collection()
+    try:
+        results = collection.get(
+            where={"user_id": str(user_id)},
+            include=[],
+        )
+        if results and results["ids"]:
+            count = len(results["ids"])
+            collection.delete(ids=results["ids"])
+            logger.info("删除用户聊天记录: user_id=%d count=%d", user_id, count)
+            return count
+        return 0
+    except Exception as e:
+        logger.warning("删除用户聊天记录失败: user_id=%d — %s", user_id, str(e))
+        return 0
+
+
+def clear_all() -> int:
+    """清空所有聊天记录（慎用）"""
+    collection = _get_collection()
+    count = collection.count()
+    if count > 0:
+        # 获取所有 ID 并删除
+        results = collection.get(include=[])
+        if results and results["ids"]:
+            collection.delete(ids=results["ids"])
+    logger.info("已清空所有聊天记录: count=%d", count)
+    return count
 
 
 def get_stats() -> dict:

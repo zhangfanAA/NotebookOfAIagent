@@ -59,9 +59,16 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     try:
         from src.api.auth import verify_token
         payload = verify_token(credentials.credentials)
-        return {"user_id": payload["user_id"], "username": payload["username"]}
+        return {"user_id": payload["user_id"], "username": payload["username"], "role": payload.get("role", 1)}
     except Exception:
         raise HTTPException(status_code=401, detail="登录已过期，请重新登录")
+
+
+async def get_admin_user(user = Depends(get_current_user)):
+    """要求管理员权限"""
+    if user.get("role") != 2:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return user
 
 
 def check_rate_limit(client_ip: str):
@@ -92,11 +99,58 @@ def get_rag():
     return _rag_service
 
 
+def _process_usage(user_id: int, usage: dict | None, provider: str = ""):
+    """处理 API 用量扣费（仅余额模型扣费）"""
+    if not usage or provider != "balance":
+        return
+    try:
+        from src.database.user_repo import UserRepository
+        from src.rag.llm_client import LLMClient
+        repo = UserRepository()
+        cost = LLMClient.calculate_cost(
+            model=usage.get("model", ""),
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            cache_hit_tokens=usage.get("cache_hit_tokens", 0),
+        )
+        if cost > 0:
+            repo.update_balance(user_id, -cost)
+            repo.add_usage_log(
+                user_id=user_id,
+                model=usage.get("model", "unknown"),
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                cache_hit_tokens=usage.get("cache_hit_tokens", 0),
+                cache_miss_tokens=usage.get("cache_miss_tokens", 0),
+                cost=cost,
+            )
+            logger.info("用户 %d 扣费 %.6f 元 (model=%s, tokens=%d+%d)", user_id, cost, usage.get("model"), usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+    except Exception as e:
+        logger.error("处理用量扣费失败: %s", str(e))
+
+
 # ===== 请求模型 =====
 
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class BanRequest(BaseModel):
+    banned: bool
+
+
+class RegistrationSettingRequest(BaseModel):
+    allow_registration: bool
+
+
+class SendMessageRequest(BaseModel):
+    to_user_id: int
+    content: str
+
+
+class BroadcastRequest(BaseModel):
+    content: str
 
 
 class ChatRequest(BaseModel):
@@ -116,6 +170,10 @@ class GenerateRequest(BaseModel):
     file_names: list
     user_prompt: str = ""
     output_type: str = "mindmap"
+
+
+class BalanceAdjustRequest(BaseModel):
+    amount: float
 
 
 class SaveMindmapRequest(BaseModel):
@@ -201,10 +259,13 @@ class SearchRequest(BaseModel):
 
 
 class LlmSettingsRequest(BaseModel):
-    provider: str  # "local" or "cloud"
+    provider: str  # "local" / "cloud" / "balance"
     cloud_base_url: str = ""
     cloud_api_key: str = ""
     cloud_model: str = ""
+    balance_api_key: str = ""
+    balance_base_url: str = ""
+    balance_model: str = ""
 
 
 # ===== 路由 =====
@@ -241,8 +302,53 @@ async def login(body: LoginRequest, request: Request):
     user = authenticate_user(body.username, body.password)
     if not user:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
-    token = create_token(user["id"], user["username"])
-    return {"token": token, "username": user["username"]}
+    if user.get("banned"):
+        raise HTTPException(status_code=403, detail="账号已被封禁，请联系管理员")
+    # 更新最后上线时间
+    from src.database.user_repo import UserRepository
+    UserRepository().update_last_online(user["id"])
+    token = create_token(user["id"], user["username"], user["role"])
+    return {"token": token, "username": user["username"], "role": user["role"]}
+
+
+@app.post("/api/auth/register")
+async def register(body: LoginRequest, request: Request):
+    """用户注册"""
+    check_rate_limit(request.client.host)
+
+    # 注册开关检查
+    from src.database.global_config_repo import GlobalConfigRepository
+    if not GlobalConfigRepository().get_allow_registration():
+        raise HTTPException(status_code=403, detail="当前未开放注册，请联系管理员")
+
+    import bcrypt as _bcrypt
+
+    username = body.username.strip()
+    password = body.password
+
+    if not username or len(username) < 2:
+        raise HTTPException(status_code=400, detail="用户名至少 2 个字符")
+    if not password or len(password) < 6:
+        raise HTTPException(status_code=400, detail="密码至少 6 个字符")
+
+    from src.database.db_manager import DBManager
+    db = DBManager()
+
+    # 检查用户名是否已存在
+    existing = db.fetch_one("SELECT id FROM users WHERE username = %s", (username,))
+    if existing:
+        raise HTTPException(status_code=409, detail="用户名已存在")
+
+    # 创建用户
+    password_hash = _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
+    user_id = db.execute_returning_id(
+        "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, 1)",
+        (username, password_hash),
+    )
+
+    from src.api.auth import create_token
+    token = create_token(user_id, username, role=1)
+    return {"token": token, "username": username, "role": 1}
 
 
 @app.post("/api/chat")
@@ -251,10 +357,25 @@ async def chat(request: Request, body: ChatRequest, user = Depends(get_current_u
     check_rate_limit(request.client.host)
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="Empty question")
+
+    from src.rag.llm_client import LLMClient
+    user_llm = LLMClient.for_user(user["user_id"])
+
+    # 余额检查（仅余额模型，管理员跳过）
+    if user_llm.provider == "balance" and user.get("role") != 2:
+        from src.database.user_repo import UserRepository
+        u = UserRepository().get_user(user["user_id"])
+        if u and float(u["balance"]) <= 0:
+            raise HTTPException(status_code=402, detail="余额不足，请联系管理员充值")
+
     rag = get_rag()
-    result = rag.query(body.question, body.session_id)
+    result = rag.query(body.question, body.session_id, llm_client=user_llm, user_id=user["user_id"])
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
+
+    # 处理用量扣费（仅余额模型）
+    _process_usage(user["user_id"], result.get("usage"), provider=user_llm.provider)
+
     return result
 
 
@@ -387,7 +508,9 @@ async def generate_content(request: Request, body: GenerateRequest, user = Depen
     if body.output_type not in ("mindmap", "notes"):
         raise HTTPException(status_code=400, detail="output_type 必须为 mindmap 或 notes")
     rag = get_rag()
-    result = rag.generate_content(body.file_names, body.user_prompt, body.output_type)
+    from src.rag.llm_client import LLMClient
+    user_llm = LLMClient.for_user(user["user_id"])
+    result = rag.generate_content(body.file_names, body.user_prompt, body.output_type, llm_client=user_llm)
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["message"])
     return result
@@ -439,7 +562,9 @@ async def generate_quiz(request: Request, body: QuizRequest, user = Depends(get_
     if not body.file_names:
         raise HTTPException(status_code=400, detail="请至少选择一个文件")
     rag = get_rag()
-    result = rag.generate_quiz(body.file_names, body.num_questions, body.difficulty, body.qtypes)
+    from src.rag.llm_client import LLMClient
+    user_llm = LLMClient.for_user(user["user_id"])
+    result = rag.generate_quiz(body.file_names, body.num_questions, body.difficulty, body.qtypes, llm_client=user_llm)
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["message"])
     return result
@@ -450,7 +575,9 @@ async def check_quiz_answer(request: Request, body: QuizCheckRequest, user = Dep
     """判分"""
     check_rate_limit(request.client.host)
     rag = get_rag()
-    result = rag.check_quiz_answer(body.question, body.user_answer)
+    from src.rag.llm_client import LLMClient
+    user_llm = LLMClient.for_user(user["user_id"])
+    result = rag.check_quiz_answer(body.question, body.user_answer, llm_client=user_llm)
     return result
 
 
@@ -500,7 +627,9 @@ async def generate_flashcards(request: Request, body: FlashcardRequest, user = D
     if not body.file_names:
         raise HTTPException(status_code=400, detail="请至少选择一个文件")
     rag = get_rag()
-    result = rag.generate_flashcards(body.file_names, body.num_cards, body.topic_focus)
+    from src.rag.llm_client import LLMClient
+    user_llm = LLMClient.for_user(user["user_id"])
+    result = rag.generate_flashcards(body.file_names, body.num_cards, body.topic_focus, llm_client=user_llm)
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["message"])
     return result
@@ -552,7 +681,9 @@ async def compare_documents(request: Request, body: CompareRequest, user = Depen
     if len(body.file_names) < 2:
         raise HTTPException(status_code=400, detail="请至少选择两个文件")
     rag = get_rag()
-    result = rag.compare_documents(body.file_names, body.focus)
+    from src.rag.llm_client import LLMClient
+    user_llm = LLMClient.for_user(user["user_id"])
+    result = rag.compare_documents(body.file_names, body.focus, llm_client=user_llm)
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["message"])
     return result
@@ -660,12 +791,30 @@ async def chat_stream(request: Request, body: ChatRequest, user = Depends(get_cu
     check_rate_limit(request.client.host)
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="Empty question")
+
+    uid = user["user_id"]
+    from src.rag.llm_client import LLMClient
+    user_llm = LLMClient.for_user(uid)
+
+    # 余额检查（仅余额模型，管理员跳过）
+    if user_llm.provider == "balance" and user.get("role") != 2:
+        from src.database.user_repo import UserRepository
+        u = UserRepository().get_user(uid)
+        if u and float(u["balance"]) <= 0:
+            raise HTTPException(status_code=402, detail="余额不足，请联系管理员充值")
+
     rag = get_rag()
+    provider = user_llm.provider
 
     def event_generator():
-        for chunk in rag.query_stream(body.question, body.session_id):
+        usage_info = None
+        for chunk in rag.query_stream(body.question, body.session_id, llm_client=user_llm, user_id=uid):
+            if chunk.get("type") == "result" and chunk.get("data", {}).get("usage"):
+                usage_info = chunk["data"]["usage"]
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
+        # 流结束后处理扣费（仅余额模型）
+        _process_usage(uid, usage_info, provider=provider)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache",
@@ -678,8 +827,12 @@ async def chat_stream(request: Request, body: ChatRequest, user = Depends(get_cu
 
 @app.delete("/api/documents/{doc_id}")
 async def delete_document(doc_id: int, user = Depends(get_current_user)):
-    """删除文档"""
+    """删除文档（仅所有者或管理员可删除）"""
     rag = get_rag()
+    # 权限校验：文档所有者或管理员(role=2)可删除
+    doc = rag._doc_mgr._doc_repo.get_document(doc_id)
+    if doc and doc.get("user_id") != user["user_id"] and user.get("role") != 2:
+        raise HTTPException(status_code=403, detail="无权删除此文档")
     success = rag.delete_document(doc_id)
     if not success:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -771,35 +924,60 @@ async def get_learning_progress(sid: str, user = Depends(get_current_user)):
 @app.get("/api/settings/llm")
 async def get_llm_settings(user = Depends(get_current_user)):
     """获取 LLM 配置"""
-    from src.database.settings_repo import SettingsRepository
-    repo = SettingsRepository()
+    from src.database.user_repo import UserRepository
+    from src.database.global_config_repo import GlobalConfigRepository
     from src.config import get_config
     cfg = get_config()
 
-    provider = repo.get("llm_provider") or "local"
-    cloud_url = repo.get("cloud_base_url") or cfg["llm"]["fallback"]["base_url"]
-    cloud_key = repo.get("cloud_api_key") or cfg["llm"]["fallback"].get("api_key", "")
-    cloud_model = repo.get("cloud_model") or cfg["llm"]["fallback"]["model"]
+    repo = GlobalConfigRepository()
+    global_cfg = repo.get(1)  # num=1 全局云端
+    balance_cfg = repo.get(2)  # num=2 余额模型
+    provider = global_cfg.get("llm_provider") or "local"
 
-    # API Key 脱敏
-    masked_key = ""
-    if cloud_key:
-        if len(cloud_key) > 8:
-            masked_key = cloud_key[:4] + "*" * (len(cloud_key) - 8) + cloud_key[-4:]
-        else:
-            masked_key = "****"
+    # 用户私有 key（cloud 模式下使用，优先于全局）
+    user_repo = UserRepository()
+    user_settings = user_repo.get_user_api_settings(user["user_id"])
+
+    cloud_key = ""
+    cloud_url = ""
+    cloud_model = ""
+    if user_settings:
+        cloud_key = user_settings.get("cloud_api_key") or ""
+        cloud_url = user_settings.get("cloud_base_url") or ""
+        cloud_model = user_settings.get("cloud_model") or ""
+
+    # 用户没有的字段回退到全局 num=1
+    if not cloud_url:
+        cloud_url = global_cfg.get("base_url") or cfg["llm"]["fallback"]["base_url"]
+    if not cloud_key:
+        cloud_key = global_cfg.get("api_key") or ""
+    if not cloud_model:
+        cloud_model = global_cfg.get("model") or cfg["llm"]["fallback"]["model"]
+
+    def _mask(key: str) -> str:
+        if not key:
+            return ""
+        if len(key) > 8:
+            return key[:4] + "*" * (len(key) - 8) + key[-4:]
+        return "****"
 
     return {
         "provider": provider,
+        "is_admin": user.get("role") == 2,
         "local": {
             "base_url": cfg["llm"]["primary"]["base_url"],
             "model": cfg["llm"]["primary"]["model"],
         },
         "cloud": {
             "base_url": cloud_url,
-            "api_key": masked_key,
+            "api_key": _mask(cloud_key),
             "model": cloud_model,
             "api_format": "OpenAI 兼容",
+        },
+        "balance": {
+            "base_url": balance_cfg.get("base_url") or "",
+            "api_key": _mask(balance_cfg.get("api_key") or ""),
+            "model": balance_cfg.get("model") or "",
         },
     }
 
@@ -807,26 +985,41 @@ async def get_llm_settings(user = Depends(get_current_user)):
 @app.put("/api/settings/llm")
 async def update_llm_settings(body: LlmSettingsRequest, user = Depends(get_current_user)):
     """更新 LLM 配置"""
-    from src.database.settings_repo import SettingsRepository
-    repo = SettingsRepository()
+    from src.database.user_repo import UserRepository
+    from src.database.global_config_repo import GlobalConfigRepository
 
-    if body.provider not in ("local", "cloud"):
-        raise HTTPException(status_code=400, detail="provider 必须为 local 或 cloud")
+    if body.provider not in ("local", "cloud", "balance"):
+        raise HTTPException(status_code=400, detail="provider 必须为 local / cloud / balance")
 
-    repo.set("llm_provider", body.provider)
+    global_repo = GlobalConfigRepository()
+    # 更新全局 provider 设置（num=1）
+    global_repo.update(1, llm_provider=body.provider)
 
     if body.provider == "cloud":
-        if body.cloud_base_url:
-            repo.set("cloud_base_url", body.cloud_base_url)
-        if body.cloud_api_key:
-            repo.set("cloud_api_key", body.cloud_api_key)
-        if body.cloud_model:
-            repo.set("cloud_model", body.cloud_model)
+        # admin 可以更新全局默认（num=1）
+        if user.get("role") == 2:
+            global_repo.update(
+                1,
+                api_key=body.cloud_api_key if body.cloud_api_key else None,
+                base_url=body.cloud_base_url if body.cloud_base_url else None,
+                model=body.cloud_model if body.cloud_model else None,
+            )
+        # 所有用户都可以更新自己的 user 级配置
+        UserRepository().update_user_api_settings(
+            user["user_id"],
+            cloud_api_key=body.cloud_api_key if body.cloud_api_key else None,
+            cloud_base_url=body.cloud_base_url if body.cloud_base_url else None,
+            cloud_model=body.cloud_model if body.cloud_model else None,
+        )
 
-    # 重载 LLM 客户端
-    global _rag_service
-    if _rag_service:
-        _rag_service.reload_llm_client()
+    if body.provider == "balance" and user.get("role") == 2:
+        # 余额模型配置写入 num=2
+        global_repo.update(
+            2,
+            api_key=body.balance_api_key if body.balance_api_key else None,
+            base_url=body.balance_base_url if body.balance_base_url else None,
+            model=body.balance_model if body.balance_model else None,
+        )
 
     return {"status": "ok", "provider": body.provider}
 
@@ -840,3 +1033,207 @@ async def search_sessions(keyword: str = Query(""), user = Depends(get_current_u
     if not keyword.strip():
         return {"sessions": rag.get_sessions(user_id=user["user_id"])}
     return {"sessions": rag.search_sessions(keyword, user_id=user["user_id"])}
+
+
+# ===== 管理员接口 =====
+
+@app.get("/api/admin/users")
+async def admin_list_users(user = Depends(get_admin_user)):
+    """获取所有用户列表"""
+    from src.database.user_repo import UserRepository
+    repo = UserRepository()
+    users = repo.list_users()
+    # Decimal 序列化为 float
+    for u in users:
+        u["balance"] = float(u["balance"])
+    return {"users": users}
+
+
+@app.post("/api/admin/users/{uid}/balance")
+async def admin_adjust_balance(uid: int, body: BalanceAdjustRequest, user = Depends(get_admin_user)):
+    """给用户调整余额（正数加、负数减）"""
+    from src.database.user_repo import UserRepository
+    repo = UserRepository()
+    target = repo.get_user(uid)
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    new_balance = repo.update_balance(uid, body.amount)
+    return {"user_id": uid, "balance": new_balance}
+
+
+@app.get("/api/admin/usage-logs")
+async def admin_usage_logs(uid: int = None, page: int = 1, size: int = 20, user = Depends(get_admin_user)):
+    """查看使用记录（管理员）"""
+    from src.database.user_repo import UserRepository
+    repo = UserRepository()
+    result = repo.get_usage_logs(user_id=uid, page=page, size=size)
+    for item in result["items"]:
+        item["cost"] = float(item["cost"])
+        if isinstance(item.get("created_at"), (str,)) is False and item.get("created_at"):
+            item["created_at"] = str(item["created_at"])
+    return result
+
+
+@app.post("/api/admin/users/{uid}/ban")
+async def admin_toggle_ban(uid: int, body: BanRequest, user = Depends(get_admin_user)):
+    """封号/解封用户"""
+    from src.database.user_repo import UserRepository
+    repo = UserRepository()
+    target = repo.get_user(uid)
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    if uid == user["user_id"]:
+        raise HTTPException(status_code=400, detail="不能封禁自己")
+    repo.set_banned(uid, body.banned)
+    return {"user_id": uid, "banned": body.banned}
+
+
+@app.get("/api/admin/settings/registration")
+async def admin_get_registration(user = Depends(get_admin_user)):
+    """获取注册开关状态（管理员）"""
+    from src.database.global_config_repo import GlobalConfigRepository
+    allowed = GlobalConfigRepository().get_allow_registration()
+    return {"allow_registration": allowed}
+
+
+@app.put("/api/admin/settings/registration")
+async def admin_set_registration(body: RegistrationSettingRequest, user = Depends(get_admin_user)):
+    """设置注册开关（管理员）"""
+    from src.database.global_config_repo import GlobalConfigRepository
+    GlobalConfigRepository().set_allow_registration(body.allow_registration)
+    return {"allow_registration": body.allow_registration}
+
+
+# ===== 公开接口 =====
+
+@app.get("/api/settings/registration")
+async def get_public_registration():
+    """获取注册开关状态（公开，无需认证）"""
+    from src.database.global_config_repo import GlobalConfigRepository
+    allowed = GlobalConfigRepository().get_allow_registration()
+    return {"allow_registration": allowed}
+
+
+# ===== 用户接口 =====
+
+@app.get("/api/user/balance")
+async def get_my_balance(user = Depends(get_current_user)):
+    """获取当前用户余额"""
+    from src.database.user_repo import UserRepository
+    repo = UserRepository()
+    u = repo.get_user(user["user_id"])
+    if not u:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return {"balance": float(u["balance"])}
+
+
+@app.get("/api/user/usage-logs")
+async def get_my_usage_logs(page: int = 1, size: int = 20, user = Depends(get_current_user)):
+    """获取当前用户使用记录"""
+    from src.database.user_repo import UserRepository
+    repo = UserRepository()
+    result = repo.get_usage_logs(user_id=user["user_id"], page=page, size=size)
+    for item in result["items"]:
+        item["cost"] = float(item["cost"])
+        if item.get("created_at"):
+            item["created_at"] = str(item["created_at"])
+    return result
+
+
+# ===== 站内信 =====
+
+# 消息发送频率限制（5 秒一条）
+_msg_rate_limit: dict = {}
+MSG_RATE_WINDOW = 5.0
+
+
+def _check_msg_rate(user_id: int):
+    import time
+    now = time.time()
+    last = _msg_rate_limit.get(user_id, 0)
+    if now - last < MSG_RATE_WINDOW:
+        raise HTTPException(status_code=429, detail=f"发送太频繁，请{MSG_RATE_WINDOW}秒后再试")
+    _msg_rate_limit[user_id] = now
+
+
+@app.post("/api/messages")
+async def send_message(body: SendMessageRequest, user = Depends(get_current_user)):
+    """发送站内信"""
+    _check_msg_rate(user["user_id"])
+    from src.database.message_repo import MessageRepository
+    from src.database.user_repo import UserRepository
+    repo = MessageRepository()
+    user_repo = UserRepository()
+
+    # 普通用户只能发给管理员
+    if user.get("role") != 2:
+        target = user_repo.get_user(body.to_user_id)
+        if not target or target.get("role") != 2:
+            raise HTTPException(status_code=403, detail="只能给管理员发送消息")
+
+    if not body.content.strip():
+        raise HTTPException(status_code=400, detail="消息内容不能为空")
+
+    msg_id = repo.send(user["user_id"], body.to_user_id, body.content.strip())
+    return {"id": msg_id, "status": "sent"}
+
+
+@app.post("/api/messages/broadcast")
+async def broadcast_message(body: BroadcastRequest, user = Depends(get_current_user)):
+    """群发消息（仅管理员）"""
+    if user.get("role") != 2:
+        raise HTTPException(status_code=403, detail="仅管理员可群发消息")
+    _check_msg_rate(user["user_id"])
+    if not body.content.strip():
+        raise HTTPException(status_code=400, detail="消息内容不能为空")
+    from src.database.message_repo import MessageRepository
+    count = MessageRepository().broadcast(user["user_id"], body.content.strip())
+    return {"status": "sent", "count": count}
+
+
+@app.get("/api/messages/inbox")
+async def get_inbox(page: int = 1, size: int = 20, user = Depends(get_current_user)):
+    """收件箱"""
+    from src.database.message_repo import MessageRepository
+    result = MessageRepository().get_inbox(user["user_id"], page, size)
+    for item in result["items"]:
+        if item.get("created_at"):
+            item["created_at"] = str(item["created_at"])
+    return result
+
+
+@app.get("/api/messages/sent")
+async def get_sent(page: int = 1, size: int = 20, user = Depends(get_current_user)):
+    """已发送"""
+    from src.database.message_repo import MessageRepository
+    result = MessageRepository().get_sent(user["user_id"], page, size)
+    for item in result["items"]:
+        if item.get("created_at"):
+            item["created_at"] = str(item["created_at"])
+    return result
+
+
+@app.get("/api/messages/unread-count")
+async def get_unread_count(user = Depends(get_current_user)):
+    """未读消息数"""
+    from src.database.message_repo import MessageRepository
+    count = MessageRepository().get_unread_count(user["user_id"])
+    return {"count": count}
+
+
+@app.put("/api/messages/{msg_id}/read")
+async def mark_read(msg_id: int, user = Depends(get_current_user)):
+    """标记已读"""
+    from src.database.message_repo import MessageRepository
+    ok = MessageRepository().mark_read(msg_id, user["user_id"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="消息不存在")
+    return {"status": "ok"}
+
+
+@app.put("/api/messages/read-all")
+async def mark_all_read(user = Depends(get_current_user)):
+    """全部标记已读"""
+    from src.database.message_repo import MessageRepository
+    count = MessageRepository().mark_all_read(user["user_id"])
+    return {"marked": count}

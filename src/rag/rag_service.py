@@ -73,19 +73,31 @@ class RAGService:
 
     # ===== 查询相关 =====
 
-    def query(self, question: str, session_id: str) -> dict:
+    def query(self, question: str, session_id: str, llm_client=None, user_id=None) -> dict:
         """核心查询接口"""
-        return self._query_engine.query(question, session_id)
+        return self._query_engine.query(question, session_id, llm_client=llm_client, user_id=user_id)
 
-    def query_stream(self, question: str, session_id: str):
+    def query_stream(self, question: str, session_id: str, llm_client=None, user_id=None):
         """流式查询接口"""
-        yield from self._query_engine.query_stream(question, session_id)
+        yield from self._query_engine.query_stream(question, session_id, llm_client=llm_client, user_id=user_id)
 
     def reload_llm_client(self):
         """重新加载 LLM 客户端（设置变更后调用）"""
         from src.rag.llm_client import LLMClient
         self._query_engine._llm_client = LLMClient()
         logger.info("LLM 客户端已重新加载: provider=%s", self._query_engine._llm_client.provider)
+
+    @staticmethod
+    def _with_llm(generator, llm_client, fn):
+        """临时替换生成器的 LLM 客户端，调用完成后恢复"""
+        if not llm_client:
+            return fn()
+        original = generator._llm
+        generator._llm = llm_client
+        try:
+            return fn()
+        finally:
+            generator._llm = original
 
     # ===== 会话相关 =====
 
@@ -183,31 +195,31 @@ class RAGService:
 
     # ===== 思维导图/笔记生成 =====
 
-    def generate_content(self, file_names: list, user_prompt: str = "", output_type: str = "mindmap") -> dict:
+    def generate_content(self, file_names: list, user_prompt: str = "", output_type: str = "mindmap", llm_client=None) -> dict:
         """生成思维导图或重点笔记"""
-        return self._mindmap_gen.generate(file_names, user_prompt, output_type)
+        return self._with_llm(self._mindmap_gen, llm_client, lambda: self._mindmap_gen.generate(file_names, user_prompt, output_type))
 
     # ===== 测验相关 =====
 
-    def generate_quiz(self, file_names: list, num_questions: int = 5, difficulty: str = "medium", qtypes: list = None) -> dict:
+    def generate_quiz(self, file_names: list, num_questions: int = 5, difficulty: str = "medium", qtypes: list = None, llm_client=None) -> dict:
         """生成测验题目"""
-        return self._quiz_gen.generate(file_names, num_questions, difficulty, qtypes)
+        return self._with_llm(self._quiz_gen, llm_client, lambda: self._quiz_gen.generate(file_names, num_questions, difficulty, qtypes))
 
-    def check_quiz_answer(self, question: dict, user_answer: str) -> dict:
+    def check_quiz_answer(self, question: dict, user_answer: str, llm_client=None) -> dict:
         """判分"""
-        return self._quiz_gen.check_answer(question, user_answer)
+        return self._with_llm(self._quiz_gen, llm_client, lambda: self._quiz_gen.check_answer(question, user_answer))
 
     # ===== 闪卡相关 =====
 
-    def generate_flashcards(self, file_names: list, num_cards: int = 10, topic_focus: str = "") -> dict:
+    def generate_flashcards(self, file_names: list, num_cards: int = 10, topic_focus: str = "", llm_client=None) -> dict:
         """生成闪卡"""
-        return self._flashcard_gen.generate(file_names, num_cards, topic_focus)
+        return self._with_llm(self._flashcard_gen, llm_client, lambda: self._flashcard_gen.generate(file_names, num_cards, topic_focus))
 
     # ===== 文档对比 =====
 
-    def compare_documents(self, file_names: list, focus: str = "") -> dict:
+    def compare_documents(self, file_names: list, focus: str = "", llm_client=None) -> dict:
         """对比文档"""
-        return self._compare_gen.generate(file_names, focus)
+        return self._with_llm(self._compare_gen, llm_client, lambda: self._compare_gen.generate(file_names, focus))
 
     # ===== 阅读进度 =====
 

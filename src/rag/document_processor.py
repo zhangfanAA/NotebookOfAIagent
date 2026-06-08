@@ -11,12 +11,15 @@ from pathlib import Path
 
 from src.data.pdf_parser import parse_pdf
 from src.database.document_repo import DocumentRepository
+from src.config import get_config
 from src.logger import get_logger
 
 logger = get_logger("rag.document_processor")
 
-# PDF 文件存储目录
-PDF_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "pdfs")
+
+def _get_pdf_dir() -> str:
+    """PDF 文件存储目录（基于 config.data_dir）"""
+    return os.path.join(get_config()["data_dir"], "pdfs")
 
 
 class DocumentProcessor:
@@ -56,7 +59,7 @@ class DocumentProcessor:
                 continue
 
             # 回退：从磁盘解析 PDF（兼容旧数据或数据库无全文的情况）
-            file_path = os.path.join(PDF_DIR, name)
+            file_path = os.path.join(_get_pdf_dir(), name)
             if not os.path.exists(file_path):
                 logger.warning("文件不存在且数据库无全文: %s", name)
                 result[name] = ""
@@ -92,7 +95,7 @@ class DocumentProcessor:
                 continue
             name = doc["file_name"]
             doc_id = doc["id"]
-            file_path = os.path.join(PDF_DIR, name)
+            file_path = os.path.join(_get_pdf_dir(), name)
             if not os.path.exists(file_path):
                 logger.warning("回填跳过: 文件不存在 %s", name)
                 continue

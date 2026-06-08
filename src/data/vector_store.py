@@ -60,27 +60,36 @@ def get_chroma_client() -> chromadb.ClientAPI:
     return _chroma_client
 
 
-def get_collection(name: str = None) -> chromadb.Collection:
-    """获取或创建集合（不传 embedding_function，手动管理向量化）"""
-    global _collection
+def get_collection(user_id: int = None, name: str = None) -> chromadb.Collection:
+    """
+    获取或创建集合
+
+    Args:
+        user_id: 用户 ID，不为 None 时返回 docs_{user_id} 集合（按用户隔离）
+        name: 集合名称，显式指定时忽略 user_id
+    """
     if name is None:
-        name = get_config()["vector_store"]["collection_name"]
+        if user_id is not None:
+            name = f"docs_{user_id}"
+        else:
+            name = get_config()["vector_store"]["collection_name"]
     client = get_chroma_client()
-    _collection = client.get_or_create_collection(
+    collection = client.get_or_create_collection(
         name=name,
         metadata={"hnsw:space": "cosine"},
     )
-    logger.info("集合就绪: %s (当前文档数: %d)", name, _collection.count())
-    return _collection
+    logger.debug("集合就绪: %s (当前文档数: %d)", name, collection.count())
+    return collection
 
 
-def ingest_chunks(chunks: list, collection_name: str = None, replace: bool = True) -> int:
+def ingest_chunks(chunks: list, user_id: int = None, collection_name: str = None, replace: bool = True) -> int:
     """
     将分块数据入库
 
     Args:
         chunks: chunker.chunk_text() 或 chunk_pages() 的输出
-        collection_name: 集合名称，默认从配置读取
+        user_id: 用户 ID，用于隔离 collection
+        collection_name: 集合名称，显式指定时忽略 user_id
         replace: 如果 True，同名文件的旧 chunks 会被删除后重新入库（增量更新）
 
     Returns:
@@ -90,13 +99,13 @@ def ingest_chunks(chunks: list, collection_name: str = None, replace: bool = Tru
         logger.warning("没有数据可入库")
         return 0
 
-    collection = get_collection(collection_name)
+    collection = get_collection(user_id=user_id, name=collection_name)
 
     # 增量更新：先删除同名文件的旧 chunks
     if replace and chunks:
         source_name = chunks[0].get("source", "")
         if source_name:
-            delete_by_source(source_name, collection_name)
+            delete_by_source(source_name, user_id=user_id, collection_name=collection_name)
 
     # 准备数据
     ids = [c["chunk_id"] for c in chunks]
@@ -128,18 +137,19 @@ def ingest_chunks(chunks: list, collection_name: str = None, replace: bool = Tru
     return len(chunks)
 
 
-def delete_by_source(source_name: str, collection_name: str = None) -> int:
+def delete_by_source(source_name: str, user_id: int = None, collection_name: str = None) -> int:
     """
-    删除指定来源文件的所有 chunks（TASK-PERF-002 增量更新）
+    删除指定来源文件的所有 chunks
 
     Args:
         source_name: 文件名
-        collection_name: 集合名称
+        user_id: 用户 ID，用于定位正确的 collection
+        collection_name: 集合名称，显式指定时忽略 user_id
 
     Returns:
         删除的块数
     """
-    collection = get_collection(collection_name)
+    collection = get_collection(user_id=user_id, name=collection_name)
     try:
         results = collection.get(
             where={"source": source_name},
@@ -156,12 +166,13 @@ def delete_by_source(source_name: str, collection_name: str = None) -> int:
         return 0
 
 
-def search(query: str, top_k: int = None) -> list:
+def search(query: str, user_id: int = None, top_k: int = None) -> list:
     """
     向量相似度检索（带缓存）
 
     Args:
         query: 查询文本
+        user_id: 用户 ID，用于检索该用户的独立 collection
         top_k: 返回数量，默认从配置读取
 
     Returns:
@@ -176,13 +187,13 @@ def search(query: str, top_k: int = None) -> list:
     if top_k is None:
         top_k = get_config()["agent"]["retrieve_top_k"]
 
-    # 检查缓存
-    cache_key = f"{query}:{top_k}"
+    # 检查缓存（含 user_id 隔离）
+    cache_key = f"{user_id}:{query}:{top_k}"
     if cache_key in _search_cache:
         logger.debug("缓存命中: query='%s'", query[:50])
         return _search_cache[cache_key]
 
-    collection = get_collection()
+    collection = get_collection(user_id=user_id)
 
     # 检查向量库是否为空
     if collection.count() == 0:
@@ -232,9 +243,9 @@ def clear_search_cache():
     logger.info("搜索缓存已清空")
 
 
-def get_stats() -> dict:
+def get_stats(user_id: int = None) -> dict:
     """获取向量库统计信息"""
-    collection = get_collection()
+    collection = get_collection(user_id=user_id)
     return {
         "total_chunks": collection.count(),
         "collection_name": collection.name,

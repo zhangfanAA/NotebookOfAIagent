@@ -45,3 +45,9 @@ class AgentState(TypedDict):
 
     # 会话 ID
     session_id: str
+
+    # 用户 ID（用于向量库隔离）
+    user_id: Optional[int]
+
+    # 用户级 LLM 客户端（可选，优先使用）
+    llm_client: Optional[object]

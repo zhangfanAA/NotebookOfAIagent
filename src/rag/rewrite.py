@@ -68,7 +68,7 @@ def rewrite_node(state: AgentState) -> dict:
 
     # 调用 LLM 重写
     try:
-        llm = _get_llm()
+        llm = state.get("llm_client") or _get_llm()
         rewritten = llm.chat(
             messages=[{"role": "user", "content": REWRITE_PROMPT.format(
                 question=question,

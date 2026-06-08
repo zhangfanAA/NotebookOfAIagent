@@ -5,15 +5,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
 import {
   Sun, Moon, Plus, Search, Trash2, Pencil, Check, X,
   Map, FileQuestion, Layers, BarChart3, GitCompare,
   Upload, FileText, Database, ChevronDown, ChevronRight,
   Download, BookOpen, Bookmark, StickyNote, Heart, Settings, LogOut,
+  Shield, Wallet, Bell,
 } from "lucide-react";
 import type { PanelType, Session, Message, Document } from "@/lib/types";
 import * as api from "@/lib/api";
-import { removeToken, getUsername } from "@/lib/auth";
+import { removeToken, useAuth } from "@/lib/auth";
 
 interface SidebarProps {
   darkMode: boolean;
@@ -25,11 +27,14 @@ interface SidebarProps {
   sessions: Session[];
   setSessions: (s: Session[]) => void;
   setMessages: (m: Message[]) => void;
+  unreadCount: number;
+  onOpenMessages: () => void;
 }
 
 export function Sidebar({
   darkMode, onToggleDark, activePanel, onTogglePanel,
   sessionId, onSelectSession, sessions, setSessions, setMessages,
+  unreadCount, onOpenMessages,
 }: SidebarProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [editingSid, setEditingSid] = useState<string | null>(null);
@@ -42,6 +47,13 @@ export function Sidebar({
     upload: false,
     knowledge: false,
   });
+  const [balance, setBalance] = useState<number | null>(null);
+  const { username, role } = useAuth();
+  const isAdmin = role === 2;
+
+  useEffect(() => {
+    api.getBalance().then((res) => setBalance(res.balance)).catch(() => {});
+  }, []);
 
   const loadSessions = useCallback(async () => {
     try {
@@ -158,9 +170,42 @@ export function Sidebar({
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3">
         <h1 className="text-lg font-semibold tracking-tight">📚 智能学习助手</h1>
-        <Button variant="ghost" size="icon" onClick={onToggleDark} className="h-8 w-8">
-          {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="icon" onClick={onOpenMessages} className="h-8 w-8 relative">
+            <Bell className="h-4 w-4" />
+            {unreadCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 h-4 min-w-4 rounded-full bg-red-500 text-[10px] text-white flex items-center justify-center px-1">
+                {unreadCount > 99 ? "99+" : unreadCount}
+              </span>
+            )}
+          </Button>
+          <Button variant="ghost" size="icon" onClick={onToggleDark} className="h-8 w-8">
+            {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </Button>
+        </div>
+      </div>
+
+      {/* User info & balance */}
+      <div className="px-4 pb-3">
+        <div className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {isAdmin ? (
+              <Shield className="h-3.5 w-3.5 text-primary shrink-0" />
+            ) : (
+              <span className="text-sm shrink-0">👤</span>
+            )}
+            <span className="text-xs font-medium truncate">{username || "未登录"}</span>
+            {isAdmin && (
+              <Badge variant="default" className="text-[10px] px-1 py-0">管理</Badge>
+            )}
+          </div>
+          <div className="flex items-center gap-1 text-xs shrink-0">
+            <Wallet className="h-3 w-3 text-muted-foreground" />
+            <span className={balance !== null && balance <= 0 ? "text-red-500 font-medium" : "text-muted-foreground"}>
+              {balance !== null ? balance.toFixed(2) : "-"}
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* Panel toggles */}
@@ -337,8 +382,19 @@ export function Sidebar({
         </div>
       </ScrollArea>
 
-      {/* System status, Settings & Logout */}
+      {/* Settings, Admin, Logout & System status */}
       <div className="border-t px-4 py-2 space-y-1">
+        {isAdmin && (
+          <button
+            onClick={() => onTogglePanel("admin")}
+            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors hover:bg-accent ${
+              activePanel === "admin" ? "bg-accent font-medium" : "text-muted-foreground"
+            }`}
+          >
+            <Shield className="h-3.5 w-3.5" />
+            用户管理
+          </button>
+        )}
         <button
           onClick={() => onTogglePanel("settings")}
           className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors hover:bg-accent ${
@@ -346,9 +402,8 @@ export function Sidebar({
           }`}
         >
           <Settings className="h-3.5 w-3.5" />
-          ⚙️ 设置
+          设置
         </button>
-        <SystemStatus />
         <button
           onClick={() => {
             removeToken();
@@ -359,6 +414,7 @@ export function Sidebar({
           <LogOut className="h-3.5 w-3.5" />
           退出登录
         </button>
+        <SystemStatus />
       </div>
     </div>
   );

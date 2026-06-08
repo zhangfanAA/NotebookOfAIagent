@@ -69,7 +69,7 @@ def generate_node(state: AgentState) -> dict:
     relevance = state.get("relevance", "no")
     loop_count = state.get("loop_count", 0)
 
-    llm = _get_llm()
+    llm = state.get("llm_client") or _get_llm()
 
     # 如果文档不相关或为空，生成兜底回答
     if relevance == "no" or not documents:

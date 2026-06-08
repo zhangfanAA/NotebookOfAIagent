@@ -22,6 +22,11 @@ TABLES = {
             id INT AUTO_INCREMENT PRIMARY KEY,
             username VARCHAR(50) NOT NULL UNIQUE,
             password_hash VARCHAR(255) NOT NULL,
+            role TINYINT NOT NULL DEFAULT 1 COMMENT '1=普通用户 2=管理员',
+            balance DECIMAL(10,4) NOT NULL DEFAULT 0.0000 COMMENT '余额(元)',
+            cloud_api_key TEXT DEFAULT NULL COMMENT '用户云端 API Key',
+            cloud_base_url VARCHAR(500) DEFAULT NULL COMMENT '用户云端 Base URL',
+            cloud_model VARCHAR(100) DEFAULT NULL COMMENT '用户云端模型名称',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """,
@@ -184,6 +189,31 @@ TABLES = {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """,
+    "usage_logs": """
+        CREATE TABLE IF NOT EXISTS usage_logs (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            model VARCHAR(100) NOT NULL,
+            prompt_tokens INT NOT NULL DEFAULT 0,
+            completion_tokens INT NOT NULL DEFAULT 0,
+            cache_hit_tokens INT NOT NULL DEFAULT 0,
+            cache_miss_tokens INT NOT NULL DEFAULT 0,
+            cost DECIMAL(10,6) NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_user_id (user_id),
+            INDEX idx_created_at (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """,
+    "global_config": """
+        CREATE TABLE IF NOT EXISTS global_config (
+            num TINYINT PRIMARY KEY COMMENT '1=全局云端 2=余额模型',
+            llm_provider VARCHAR(20) NOT NULL DEFAULT 'local' COMMENT 'local / cloud / balance',
+            api_key TEXT DEFAULT NULL COMMENT 'API Key',
+            base_url VARCHAR(500) DEFAULT NULL COMMENT 'Base URL',
+            model VARCHAR(100) DEFAULT NULL COMMENT '模型名称',
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    """,
 }
 
 
@@ -268,16 +298,65 @@ class DBManager:
                         cursor.execute(f"ALTER TABLE `{tbl}` ADD INDEX idx_user_id (user_id)")
                         logger.info("迁移: %s 表已添加 user_id 列", tbl)
 
+                # 迁移：给 users 表加 role 列（已有则跳过）
+                cursor.execute(
+                    "SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'role'"
+                )
+                if cursor.fetchone()["cnt"] == 0:
+                    cursor.execute("ALTER TABLE users ADD COLUMN role TINYINT NOT NULL DEFAULT 1 COMMENT '1=普通用户 2=管理员'")
+                    logger.info("迁移: users 表已添加 role 列")
+
+                # 迁移：给 users 表加 balance 列（已有则跳过）
+                cursor.execute(
+                    "SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'balance'"
+                )
+                if cursor.fetchone()["cnt"] == 0:
+                    cursor.execute("ALTER TABLE users ADD COLUMN balance DECIMAL(10,4) NOT NULL DEFAULT 0.0000 COMMENT '余额(元)'")
+                    logger.info("迁移: users 表已添加 balance 列")
+
+                # 迁移：给 users 表加 cloud_api_key / cloud_base_url / cloud_model 列
+                cursor.execute(
+                    "SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'cloud_api_key'"
+                )
+                if cursor.fetchone()["cnt"] == 0:
+                    cursor.execute("ALTER TABLE users ADD COLUMN cloud_api_key TEXT DEFAULT NULL COMMENT '用户云端 API Key'")
+                    cursor.execute("ALTER TABLE users ADD COLUMN cloud_base_url VARCHAR(500) DEFAULT NULL COMMENT '用户云端 Base URL'")
+                    cursor.execute("ALTER TABLE users ADD COLUMN cloud_model VARCHAR(100) DEFAULT NULL COMMENT '用户云端模型名称'")
+                    logger.info("迁移: users 表已添加 cloud_api_key / cloud_base_url / cloud_model 列")
+
+                # 迁移：给 users 表加 banned 列
+                cursor.execute(
+                    "SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'banned'"
+                )
+                if cursor.fetchone()["cnt"] == 0:
+                    cursor.execute("ALTER TABLE users ADD COLUMN banned TINYINT NOT NULL DEFAULT 0 COMMENT '1=已封号' AFTER role")
+                    logger.info("迁移: users 表已添加 banned 列")
+
+                # 迁移：给 users 表加 last_online_at 列
+                cursor.execute(
+                    "SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'last_online_at'"
+                )
+                if cursor.fetchone()["cnt"] == 0:
+                    cursor.execute("ALTER TABLE users ADD COLUMN last_online_at DATETIME DEFAULT NULL COMMENT '最后上线时间'")
+                    logger.info("迁移: users 表已添加 last_online_at 列")
+
                 # 创建 admin 用户（密码 bcrypt 加密）
                 cursor.execute("SELECT id FROM users WHERE username = 'admin'")
                 admin_row = cursor.fetchone()
                 if admin_row:
                     admin_id = admin_row["id"]
+                    # 确保 admin 用户 role=2
+                    cursor.execute("UPDATE users SET role = 2 WHERE id = %s AND role != 2", (admin_id,))
                     logger.info("admin 用户已存在: id=%d", admin_id)
                 else:
                     password_hash = bcrypt.hashpw("zf051110".encode(), bcrypt.gensalt()).decode()
                     cursor.execute(
-                        "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
+                        "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, 2)",
                         ("admin", password_hash),
                     )
                     admin_id = cursor.lastrowid
@@ -295,13 +374,93 @@ class DBManager:
                     ("llm_provider", "local"),
                     ("cloud_base_url", "https://api.deepseek.com/v1"),
                     ("cloud_api_key", ""),
-                    ("cloud_model", "deepseek-chat"),
+                    ("cloud_model", "deepseek-v4-flash"),
                 ]
                 for key, value in default_settings:
                     cursor.execute(
                         "INSERT IGNORE INTO settings (`key`, `value`) VALUES (%s, %s)",
                         (key, value),
                     )
+
+                # 迁移：global_config 旧表（id 主键、cloud_*/balance_* 列）→ 新表（num 主键、api_key/base_url/model）
+                cursor.execute(
+                    "SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'global_config' AND COLUMN_NAME = 'num'"
+                )
+                if cursor.fetchone()["cnt"] == 0:
+                    # 旧表存在，需要迁移
+                    # 读取旧数据
+                    old = cursor.fetchone()  # 先清掉上面的 SELECT 结果
+                    cursor.execute("SELECT * FROM global_config WHERE id = 1")
+                    old = cursor.fetchone()
+
+                    # 删除旧表，重建新表
+                    cursor.execute("DROP TABLE IF EXISTS global_config")
+                    cursor.execute("""
+                        CREATE TABLE global_config (
+                            num TINYINT PRIMARY KEY COMMENT '1=全局云端 2=余额模型',
+                            llm_provider VARCHAR(20) NOT NULL DEFAULT 'local' COMMENT 'local / cloud / balance',
+                            api_key TEXT DEFAULT NULL COMMENT 'API Key',
+                            base_url VARCHAR(500) DEFAULT NULL COMMENT 'Base URL',
+                            model VARCHAR(100) DEFAULT NULL COMMENT '模型名称',
+                            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """)
+
+                    # 迁移旧数据
+                    if old:
+                        cursor.execute(
+                            "INSERT INTO global_config (num, llm_provider, api_key, base_url, model) VALUES (1, %s, %s, %s, %s)",
+                            (old.get("llm_provider", "local"), "", old.get("cloud_base_url", "https://api.deepseek.com/v1"), old.get("cloud_model", "deepseek-v4-flash")),
+                        )
+                        cursor.execute(
+                            "INSERT INTO global_config (num, llm_provider, api_key, base_url, model) VALUES (2, %s, %s, %s, %s)",
+                            ("balance", old.get("balance_api_key", "sk-0524684db78f4d8a9fa95de572074c96"), old.get("balance_base_url", "https://api.deepseek.com/v1"), old.get("balance_model", "deepseek-v4-flash")),
+                        )
+                        cursor.execute(
+                            "INSERT INTO global_config (num, llm_provider, api_key, base_url, model) VALUES (3, '', '1', '', '')"
+                        )
+                    else:
+                        cursor.execute(
+                            "INSERT INTO global_config (num, llm_provider, api_key, base_url, model) VALUES (1, 'local', '', 'https://api.deepseek.com/v1', 'deepseek-v4-flash')"
+                        )
+                        cursor.execute(
+                            "INSERT INTO global_config (num, llm_provider, api_key, base_url, model) VALUES (2, 'balance', 'sk-0524684db78f4d8a9fa95de572074c96', 'https://api.deepseek.com/v1', 'deepseek-v4-flash')"
+                        )
+                        cursor.execute(
+                            "INSERT INTO global_config (num, llm_provider, api_key, base_url, model) VALUES (3, '', '1', '', '')"
+                        )
+                    logger.info("迁移: global_config 已从旧表结构迁移到 num 主键结构")
+                else:
+                    # 新表结构已存在，确保两行数据存在
+                    cursor.execute(
+                        "INSERT IGNORE INTO global_config (num, llm_provider, api_key, base_url, model) "
+                        "VALUES (1, 'local', '', 'https://api.deepseek.com/v1', 'deepseek-v4-flash')"
+                    )
+                    cursor.execute(
+                        "INSERT IGNORE INTO global_config (num, llm_provider, api_key, base_url, model) "
+                        "VALUES (2, 'balance', 'sk-0524684db78f4d8a9fa95de572074c96', 'https://api.deepseek.com/v1', 'deepseek-v4-flash')"
+                    )
+
+                # 注册开关配置（num=3，用 api_key 字段存 allow_registration: "1"=开 "0"=关）
+                cursor.execute(
+                    "INSERT IGNORE INTO global_config (num, llm_provider, api_key, base_url, model) "
+                    "VALUES (3, '', '1', '', '')"
+                )
+
+                # 站内信表
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS user_messages (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        from_user_id INT NOT NULL,
+                        to_user_id INT NOT NULL,
+                        content TEXT NOT NULL,
+                        is_read TINYINT NOT NULL DEFAULT 0,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        INDEX idx_to_read (to_user_id, is_read),
+                        INDEX idx_from (from_user_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """)
 
             logger.info("所有数据表初始化完成")
         finally:

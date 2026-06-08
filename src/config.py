@@ -24,6 +24,7 @@ def load_config(config_path: str = None) -> dict:
 
     # 默认配置
     config = {
+        "data_dir": str(PROJECT_ROOT / "data"),
         "database": {
             "host": "localhost",
             "port": 3306,
@@ -41,7 +42,7 @@ def load_config(config_path: str = None) -> dict:
             },
             "fallback": {
                 "provider": "deepseek",
-                "model": "deepseek-chat",
+                "model": "deepseek-v4-flash",
                 "api_key": "",
                 "base_url": "https://api.deepseek.com/v1",
                 "timeout": 30,
@@ -76,6 +77,10 @@ def load_config(config_path: str = None) -> dict:
             yaml_config = yaml.safe_load(f)
             if yaml_config:
                 _deep_merge(config, yaml_config)
+
+    # 空值回退到默认绝对路径（避免相对路径依赖 CWD）
+    if not config["vector_store"].get("persist_dir"):
+        config["vector_store"]["persist_dir"] = str(PROJECT_ROOT / "data" / "chroma_db")
 
     # 环境变量覆盖
     env_overrides = {

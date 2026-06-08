@@ -10,9 +10,11 @@ import { FlashcardPanel } from "@/components/flashcard-panel";
 import { StatsPanel } from "@/components/stats-panel";
 import { ComparePanel } from "@/components/compare-panel";
 import { SettingsPanel } from "@/components/settings-panel";
+import { AdminPanel } from "@/components/admin-panel";
+import { MessagePanel } from "@/components/message-panel";
 import type { PanelType, Session, Message } from "@/lib/types";
 import * as api from "@/lib/api";
-import { isAuthenticated } from "@/lib/auth";
+import { isAuthenticated, getRole } from "@/lib/auth";
 
 export default function Home() {
   const router = useRouter();
@@ -32,6 +34,7 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   // 右侧面板可调整宽度
   const [panelWidth, setPanelWidth] = useState(40); // 百分比
@@ -40,6 +43,21 @@ export default function Home() {
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
   }, [darkMode]);
+
+  // 未读消息轮询
+  const fetchUnread = useCallback(async () => {
+    try {
+      const res = await api.getUnreadCount();
+      setUnreadCount(res.count);
+    } catch {
+      // silent
+    }
+  }, []);
+  useEffect(() => {
+    fetchUnread();
+    const timer = setInterval(fetchUnread, 30000);
+    return () => clearInterval(timer);
+  }, [fetchUnread]);
 
   // 自动选中最近的会话（首次加载时）
   useEffect(() => {
@@ -86,7 +104,7 @@ export default function Home() {
     document.addEventListener("mouseup", onMouseUp);
   }, [panelWidth]);
 
-  const isFullPage = activePanel === "stats" || activePanel === "compare" || activePanel === "settings";
+  const isFullPage = activePanel === "stats" || activePanel === "compare" || activePanel === "settings" || activePanel === "admin" || activePanel === "messages";
   const isRightPanel = activePanel === "mindmap" || activePanel === "quiz" || activePanel === "flashcard";
 
   if (!authChecked) return null;
@@ -123,6 +141,8 @@ export default function Home() {
           sessions={sessions}
           setSessions={setSessions}
           setMessages={setMessages}
+          unreadCount={unreadCount}
+          onOpenMessages={() => setActivePanel("messages")}
         />
       </aside>
 
@@ -133,6 +153,8 @@ export default function Home() {
             {activePanel === "stats" && <StatsPanel sessionId={sessionId} />}
             {activePanel === "compare" && <ComparePanel />}
             {activePanel === "settings" && <SettingsPanel />}
+            {activePanel === "admin" && <AdminPanel />}
+            {activePanel === "messages" && <MessagePanel userRole={getRole() || 1} onUnreadChange={fetchUnread} />}
           </div>
         ) : (
           <>

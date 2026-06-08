@@ -85,7 +85,7 @@ def grade_node(state: AgentState) -> dict:
     prompt = GRADE_PROMPT.format(question=question, documents=doc_text)
 
     try:
-        llm = _get_llm()
+        llm = state.get("llm_client") or _get_llm()
         response = llm.chat(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,

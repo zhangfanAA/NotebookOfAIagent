@@ -10,8 +10,10 @@ import { setToken, isAuthenticated } from "@/lib/auth";
 
 export default function LoginPage() {
   const router = useRouter();
+  const [mode, setMode] = useState<"login" | "register">("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -21,18 +23,49 @@ export default function LoginPage() {
     }
   }, [router]);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setLoading(true);
     try {
-      const res = await api.login(username, password);
-      setToken(res.token, res.username);
+      if (mode === "register") {
+        if (password !== confirmPassword) {
+          setError("两次输入的密码不一致");
+          setLoading(false);
+          return;
+        }
+        const res = await api.register(username, password);
+        setToken(res.token, res.username, res.role || 1);
+      } else {
+        const res = await api.login(username, password);
+        setToken(res.token, res.username, res.role || 1);
+      }
       router.push("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "登录失败");
+      const msg = err instanceof Error ? err.message : "操作失败";
+      if (msg.includes("封禁") || msg.includes("403")) {
+        setError("账号已被封禁，请联系管理员");
+      } else {
+        setError(msg);
+      }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const switchMode = () => {
+    const newMode = mode === "login" ? "register" : "login";
+    setMode(newMode);
+    setError("");
+    setConfirmPassword("");
+    // 切换到注册模式时检查注册开关
+    if (newMode === "register") {
+      api.checkRegistrationOpen().then((res) => {
+        if (!res.allow_registration) {
+          setError("当前未开放注册，请联系管理员");
+          setMode("login");
+        }
+      }).catch(() => {});
     }
   };
 
@@ -61,13 +94,15 @@ export default function LoginPage() {
 
         <Card className="border-slate-700/50 bg-slate-800/80 shadow-2xl backdrop-blur-xl">
           <CardHeader className="pb-4">
-            <CardTitle className="text-xl text-white">登录</CardTitle>
+            <CardTitle className="text-xl text-white">
+              {mode === "login" ? "登录" : "注册"}
+            </CardTitle>
             <CardDescription className="text-slate-400">
-              请输入您的账号信息
+              {mode === "login" ? "请输入您的账号信息" : "创建一个新账号"}
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleLogin} className="space-y-4">
+            <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-300">
                   用户名
@@ -90,11 +125,27 @@ export default function LoginPage() {
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="请输入密码"
+                  placeholder={mode === "register" ? "至少 6 位" : "请输入密码"}
                   required
                   className="h-10 border-slate-600 bg-slate-700/50 text-white placeholder:text-slate-500 focus:border-blue-500 focus:ring-blue-500/20"
                 />
               </div>
+
+              {mode === "register" && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-300">
+                    确认密码
+                  </label>
+                  <Input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="请再次输入密码"
+                    required
+                    className="h-10 border-slate-600 bg-slate-700/50 text-white placeholder:text-slate-500 focus:border-blue-500 focus:ring-blue-500/20"
+                  />
+                </div>
+              )}
 
               {error && (
                 <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-3 py-2">
@@ -107,8 +158,22 @@ export default function LoginPage() {
                 disabled={loading}
                 className="h-10 w-full bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-50"
               >
-                {loading ? "登录中..." : "登录"}
+                {loading
+                  ? (mode === "login" ? "登录中..." : "注册中...")
+                  : (mode === "login" ? "登录" : "注册")
+                }
               </Button>
+
+              <p className="text-center text-sm text-slate-400">
+                {mode === "login" ? "还没有账号？" : "已有账号？"}
+                <button
+                  type="button"
+                  onClick={switchMode}
+                  className="ml-1 text-blue-400 hover:text-blue-300 hover:underline"
+                >
+                  {mode === "login" ? "立即注册" : "去登录"}
+                </button>
+              </p>
             </form>
           </CardContent>
         </Card>

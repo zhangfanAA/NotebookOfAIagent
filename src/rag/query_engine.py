@@ -29,7 +29,7 @@ class QueryEngine:
         self._diagnosis = DiagnosisEngine()
         self._safe_system_prompt = build_safe_system_prompt()
 
-    def query(self, question: str, session_id: str) -> dict:
+    def query(self, question: str, session_id: str, llm_client=None, user_id=None) -> dict:
         """
         核心查询接口（含安全校验 + 多轮上下文增强）
 
@@ -77,7 +77,7 @@ class QueryEngine:
 
                 # 1) 语义检索跨会话历史记录
                 history = chat_history_store.search_history(
-                    effective_question, top_k=3
+                    effective_question, top_k=3, user_id=user_id
                 )
                 if history:
                     for h in history:
@@ -107,6 +107,11 @@ class QueryEngine:
             if history_context:
                 query_for_agent = f"[相关历史参考]\n{history_context}\n\n[当前问题]\n{effective_question}"
 
+            # 如果传入了用户级 LLMClient，临时替换
+            original_llm = self._llm_client
+            if llm_client:
+                self._llm_client = llm_client
+
             initial_state: AgentState = {
                 "question": query_for_agent,
                 "rewritten_query": None,
@@ -120,6 +125,8 @@ class QueryEngine:
                 "loop_count": 0,
                 "max_loops": max_loops,
                 "session_id": session_id,
+                "user_id": user_id,
+                "llm_client": llm_client,
             }
 
             # 存储用户消息
@@ -128,6 +135,10 @@ class QueryEngine:
             # 执行 LangGraph Agent
             graph = get_graph()
             result = graph.invoke(initial_state)
+
+            # 恢复原始 LLMClient
+            if llm_client:
+                self._llm_client = original_llm
 
             answer = result.get("answer", "抱歉，无法生成回答")
             sources = result.get("sources", [])
@@ -148,7 +159,7 @@ class QueryEngine:
 
             # 存储到聊天记录向量库（增强记忆）
             try:
-                chat_history_store.store_qa(session_id, question, answer, sources)
+                chat_history_store.store_qa(session_id, question, answer, sources, user_id=user_id)
             except Exception as e:
                 logger.debug("聊天记录存储跳过: %s", str(e))
 
@@ -164,6 +175,9 @@ class QueryEngine:
                 "触发" if diagnosis_result.get("triggered") else "未触发",
             )
 
+            # 用量信息
+            usage_info = self._llm_client.last_usage
+
             return {
                 "answer": answer,
                 "sources": sources,
@@ -171,13 +185,14 @@ class QueryEngine:
                 "confidence": confidence,
                 "loop_count": loop_count,
                 "diagnosis": diagnosis_result,
+                "usage": usage_info,
             }
 
         except Exception as e:
             logger.error("查询失败: session=%s error=%s", session_id, str(e))
             return {"error": str(e), "code": "AGENT_ERROR"}
 
-    def query_stream(self, question: str, session_id: str):
+    def query_stream(self, question: str, session_id: str, llm_client=None, user_id=None):
         """
         流式查询接口（生成器）
 
@@ -213,7 +228,7 @@ class QueryEngine:
 
                 # 1) 语义检索跨会话历史记录
                 history = chat_history_store.search_history(
-                    effective_question, top_k=3
+                    effective_question, top_k=3, user_id=user_id
                 )
                 if history:
                     for h in history:
@@ -242,6 +257,11 @@ class QueryEngine:
             query_for_agent = effective_question
             if history_context:
                 query_for_agent = f"[相关历史参考]\n{history_context}\n\n[当前问题]\n{effective_question}"
+            # 如果传入了用户级 LLMClient，临时替换
+            original_llm = self._llm_client
+            if llm_client:
+                self._llm_client = llm_client
+
             initial_state: AgentState = {
                 "question": query_for_agent,
                 "rewritten_query": None,
@@ -255,6 +275,8 @@ class QueryEngine:
                 "loop_count": 0,
                 "max_loops": max_loops,
                 "session_id": session_id,
+                "user_id": user_id,
+                "llm_client": llm_client,
             }
 
             self._session_mgr.add_message(session_id, "user", question)
@@ -343,12 +365,15 @@ class QueryEngine:
 
             # 存储到聊天记录向量库（增强记忆）
             try:
-                chat_history_store.store_qa(session_id, question, full_answer, sources_list)
+                chat_history_store.store_qa(session_id, question, full_answer, sources_list, user_id=user_id)
             except Exception as e:
                 logger.debug("聊天记录存储跳过: %s", str(e))
 
             self._maybe_update_title(session_id, question)
             diagnosis_result = self._diagnosis.record_question(session_id, question)
+
+            # 用量信息
+            usage_info = self._llm_client.last_usage
 
             yield {
                 "type": "result",
@@ -361,12 +386,17 @@ class QueryEngine:
                     "context_used": context_used,
                     "original_question": original_question,
                     "rewritten_question": effective_question if context_used else None,
+                    "usage": usage_info,
                 },
             }
 
         except Exception as e:
             logger.error("流式查询失败: session=%s error=%s", session_id, str(e))
             yield {"type": "error", "data": str(e)}
+        finally:
+            # 恢复原始 LLMClient
+            if llm_client:
+                self._llm_client = original_llm
 
     def _maybe_update_title(self, session_id: str, question: str):
         """第一条消息时自动生成会话标题"""

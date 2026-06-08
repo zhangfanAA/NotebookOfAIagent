@@ -29,10 +29,12 @@ def retrieve_node(state: AgentState) -> dict:
     query = state.get("rewritten_query") or state["question"]
     top_k = state.get("max_loops", 3) + 2  # 至少返回 5 个
 
-    logger.info("[检索节点] 查询: '%s' (top_k=%d)", query[:80], top_k)
+    user_id = state.get("user_id")
+
+    logger.info("[检索节点] 查询: '%s' (top_k=%d, user_id=%s)", query[:80], top_k, user_id)
 
     try:
-        results = vector_store.search(query, top_k=top_k)
+        results = vector_store.search(query, user_id=user_id, top_k=top_k)
     except Exception as e:
         logger.error("[检索节点] 检索失败: %s", str(e))
         results = []

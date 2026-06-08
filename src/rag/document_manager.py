@@ -13,12 +13,15 @@ from src.data import vector_store
 from src.data.pdf_parser import parse_pdf
 from src.data.chunker import chunk_pages
 from src.database.document_repo import DocumentRepository
+from src.config import get_config
 from src.logger import get_logger
 
 logger = get_logger("rag.document_manager")
 
-# PDF 永久存储目录
-PDF_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data", "pdfs")
+
+def _get_pdf_dir() -> str:
+    """PDF 永久存储目录（基于 config.data_dir）"""
+    return os.path.join(get_config()["data_dir"], "pdfs")
 
 
 class DocumentManager:
@@ -49,8 +52,9 @@ class DocumentManager:
         file_size = path.stat().st_size
 
         # 复制到永久存储目录
-        os.makedirs(PDF_DIR, exist_ok=True)
-        permanent_path = os.path.join(PDF_DIR, file_name)
+        pdf_dir = _get_pdf_dir()
+        os.makedirs(pdf_dir, exist_ok=True)
+        permanent_path = os.path.join(pdf_dir, file_name)
         shutil.copy2(str(path), permanent_path)
         logger.info("文件已复制到永久目录: %s", permanent_path)
 
@@ -71,6 +75,10 @@ class DocumentManager:
                 return {"status": "error", "chunks_count": 0,
                         "message": f"暂不支持的文件类型: {file_type}"}
 
+            # 修正 source 名：parse_pdf 用临时文件名，需要替换为原始文件名
+            for page in pages:
+                page["source"] = file_name
+
             # 提取并存储全文（后续生成思维导图/测验直接读取，不再重复解析）
             full_text = "\n\n".join(p["content"] for p in pages if p.get("content"))
             if full_text:
@@ -82,8 +90,8 @@ class DocumentManager:
                 self._doc_repo.mark_error(doc_id, "文档解析后无有效内容")
                 return {"status": "error", "chunks_count": 0, "message": "文档无有效内容"}
 
-            # 入库向量库
-            count = vector_store.ingest_chunks(chunks)
+            # 入库向量库（按用户隔离 collection）
+            count = vector_store.ingest_chunks(chunks, user_id=user_id)
 
             # 更新 MySQL
             self._doc_repo.mark_ready(doc_id, count)
@@ -110,19 +118,19 @@ class DocumentManager:
         doc = self._doc_repo.get_document(doc_id)
         if not doc:
             return False
-        # 删除向量库中的 chunks
+        # 删除向量库中的 chunks（传入 user_id 以定位正确的 collection）
         if doc.get("status") == "ready" and doc.get("file_name"):
             try:
-                vector_store.delete_by_source(doc["file_name"])
+                vector_store.delete_by_source(doc["file_name"], user_id=doc.get("user_id"))
             except Exception as e:
                 logger.warning("删除向量库 chunks 失败: %s", str(e))
         # 删除 MySQL 记录
         return self._doc_repo.delete_document(doc_id)
 
-    def get_vector_db_stats(self) -> dict:
+    def get_vector_db_stats(self, user_id: int = None) -> dict:
         """获取向量库统计信息"""
         try:
-            vs_stats = vector_store.get_stats()
+            vs_stats = vector_store.get_stats(user_id=user_id)
             doc_stats = self._doc_repo.get_stats()
             return {
                 "total_chunks": vs_stats["total_chunks"],

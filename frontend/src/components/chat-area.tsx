@@ -108,7 +108,14 @@ export function ChatArea({ sessionId, messages, setMessages, onMobileMenuOpen, p
       },
       // onError
       (err) => {
-        finalizeLastMessage(sm, { content: `⚠️ 连接失败: ${err.message}` });
+        const msg = err.message || "";
+        if (msg.includes("余额不足") || msg.includes("402")) {
+          // 移除占位消息
+          sm((prev) => prev.filter((_, i) => i < prev.length - 1 || prev[i].role !== "assistant" || prev[i].content !== "思考中..."));
+          alert("余额不足，请联系管理员充值后再试");
+        } else {
+          finalizeLastMessage(sm, { content: `⚠️ 连接失败: ${msg}` });
+        }
         abortRef.current = null;
         setIsStreaming(false);
       },

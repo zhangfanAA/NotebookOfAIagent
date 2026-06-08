@@ -33,6 +33,14 @@ class LLMClient:
         response = client.chat([{"role": "user", "content": "你好"}])
     """
 
+    # DeepSeek 定价 (1.1 倍官方价格，单位: 元/百万 tokens)
+    PRICING = {
+        "deepseek-v4-flash": {"cache_hit": 0.022, "cache_miss": 1.1, "output": 2.2},
+        "deepseek-chat":     {"cache_hit": 0.022, "cache_miss": 1.1, "output": 2.2},
+        "deepseek-v4-pro":   {"cache_hit": 0.0275, "cache_miss": 3.3, "output": 6.6},
+        "deepseek-reasoner": {"cache_hit": 0.0275, "cache_miss": 3.3, "output": 6.6},
+    }
+
     def __init__(self, config: dict = None):
         """
         初始化 LLM 客户端
@@ -44,6 +52,9 @@ class LLMClient:
             config = get_config()["llm"]
 
         self._config = config
+
+        # 上次调用的 token 用量信息
+        self.last_usage: dict = None
 
         # Ollama 配置
         self._ollama_config = config["primary"]
@@ -71,17 +82,71 @@ class LLMClient:
             self._cloud_model if self._cloud_client else "不可用",
         )
 
+    @classmethod
+    def for_user(cls, user_id: int) -> "LLMClient":
+        """
+        根据用户 ID 创建 LLMClient。
+
+        如果全局 provider 是 balance → 使用余额模型（global_config.balance_*）
+        如果用户有自己的 key → 使用用户私有 key
+        否则 → 使用全局默认（global_config.cloud_*）
+        """
+        client = cls()
+
+        # 全局 provider 为 balance 时，所有用户都走余额模型
+        if client._provider == "balance":
+            logger.info("LLMClient.for_user(%d): 使用余额模型, model=%s", user_id, client._cloud_model)
+            return client
+
+        # 全局 provider 为 cloud 时，检查用户是否有自己的 key
+        if client._provider == "cloud":
+            try:
+                from src.database.user_repo import UserRepository
+                user_settings = UserRepository().get_user_api_settings(user_id)
+                if user_settings and user_settings.get("cloud_api_key"):
+                    api_key = user_settings["cloud_api_key"]
+                    base_url = user_settings.get("cloud_base_url") or client._cloud_config.get("base_url")
+                    model = user_settings.get("cloud_model") or client._cloud_model
+
+                    client._cloud_config["api_key"] = api_key
+                    client._cloud_config["base_url"] = base_url
+                    client._cloud_model = model
+                    client._cloud_config["model"] = model
+                    client._init_cloud_client()
+                    logger.info("LLMClient.for_user(%d): 使用用户私有 API Key, model=%s", user_id, model)
+            except Exception as e:
+                logger.warning("LLMClient.for_user(%d): 读取用户设置失败: %s", user_id, str(e))
+
+        return client
+
     def _read_provider_from_db(self) -> str:
-        """从数据库读取当前 LLM provider 设置"""
+        """从数据库 global_config 表读取当前 LLM provider 设置"""
         try:
-            from src.database.settings_repo import SettingsRepository
-            repo = SettingsRepository()
-            provider = repo.get("llm_provider")
-            if provider in ("local", "cloud"):
-                # 同时读取云端配置覆盖
-                cloud_url = repo.get("cloud_base_url")
-                cloud_key = repo.get("cloud_api_key")
-                cloud_model = repo.get("cloud_model")
+            from src.database.global_config_repo import GlobalConfigRepository
+            repo = GlobalConfigRepository()
+            cfg = repo.get(1)  # num=1 全局云端配置
+            provider = cfg.get("llm_provider") or "local"
+
+            if provider == "balance":
+                # 余额模型：使用 num=2 的独立配置
+                balance_cfg = repo.get(2)
+                balance_key = balance_cfg.get("api_key")
+                balance_url = balance_cfg.get("base_url")
+                balance_model = balance_cfg.get("model")
+                if balance_key:
+                    self._cloud_config["api_key"] = balance_key
+                if balance_url:
+                    self._cloud_config["base_url"] = balance_url
+                if balance_model:
+                    self._cloud_model = balance_model
+                    self._cloud_config["model"] = balance_model
+                return "balance"
+
+            if provider == "cloud":
+                # 全局云端：使用 num=1 的配置（api_key 为空则用 settings.yaml 默认值）
+                cloud_url = cfg.get("base_url")
+                cloud_key = cfg.get("api_key")
+                cloud_model = cfg.get("model")
                 if cloud_url:
                     self._cloud_config["base_url"] = cloud_url
                 if cloud_key:
@@ -89,9 +154,10 @@ class LLMClient:
                 if cloud_model:
                     self._cloud_model = cloud_model
                     self._cloud_config["model"] = cloud_model
-                return provider
+                return "cloud"
+
         except Exception as e:
-            logger.debug("读取 LLM 设置失败，使用默认: %s", str(e))
+            logger.debug("读取全局 LLM 设置失败，使用默认: %s", str(e))
         return "local"
 
     def _init_cloud_client(self):
@@ -119,6 +185,39 @@ class LLMClient:
         except Exception:
             return False
 
+    @staticmethod
+    def calculate_cost(model: str, prompt_tokens: int, completion_tokens: int,
+                       cache_hit_tokens: int = 0) -> float:
+        """
+        计算 API 调用费用（元）
+
+        Args:
+            model: 模型名称
+            prompt_tokens: 输入 token 数
+            completion_tokens: 输出 token 数
+            cache_hit_tokens: 缓存命中 token 数
+
+        Returns:
+            费用（元）
+        """
+        # 匹配定价表（模糊匹配，去掉前缀）
+        pricing = None
+        for key, p in LLMClient.PRICING.items():
+            if key in model:
+                pricing = p
+                break
+        if not pricing:
+            # 未知模型按 deepseek-chat 定价
+            pricing = LLMClient.PRICING["deepseek-chat"]
+
+        cache_miss_tokens = prompt_tokens - cache_hit_tokens
+        cost = (
+            cache_hit_tokens * pricing["cache_hit"] / 1_000_000
+            + cache_miss_tokens * pricing["cache_miss"] / 1_000_000
+            + completion_tokens * pricing["output"] / 1_000_000
+        )
+        return round(cost, 6)
+
     def chat(
         self,
         messages: list,
@@ -143,7 +242,7 @@ class LLMClient:
         Raises:
             RuntimeError: 调用失败时抛出
         """
-        if self._provider == "cloud":
+        if self._provider in ("cloud", "balance"):
             return self._call_cloud(messages, temperature, max_tokens)
         else:
             return self._call_ollama(messages, temperature, max_tokens)
@@ -162,7 +261,7 @@ class LLMClient:
         Yields:
             str: 每个 token 的文本片段
         """
-        if self._provider == "cloud":
+        if self._provider in ("cloud", "balance"):
             yield from self._stream_cloud(messages, temperature, max_tokens)
         else:
             yield from self._stream_ollama(messages, temperature, max_tokens)
@@ -195,11 +294,21 @@ class LLMClient:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stream=True,
+                stream_options={"include_usage": True},
             )
             for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta.content:
-                    yield delta.content
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+                # 最后一个 chunk 包含 usage 信息
+                if chunk.usage:
+                    self.last_usage = {
+                        "model": self._cloud_model,
+                        "prompt_tokens": chunk.usage.prompt_tokens,
+                        "completion_tokens": chunk.usage.completion_tokens,
+                        "total_tokens": chunk.usage.total_tokens,
+                        "cache_hit_tokens": getattr(chunk.usage, "prompt_cache_hit_tokens", 0) or 0,
+                        "cache_miss_tokens": getattr(chunk.usage, "prompt_cache_miss_tokens", 0) or 0,
+                    }
         except Exception as e:
             logger.error("云端 API 流式调用失败: %s", str(e))
             raise RuntimeError(f"云端 API 流式调用失败: {e}")
@@ -239,6 +348,16 @@ class LLMClient:
                 )
                 elapsed = time.time() - start
                 content = response.choices[0].message.content
+                # 提取用量信息
+                if response.usage:
+                    self.last_usage = {
+                        "model": self._cloud_model,
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens,
+                        "total_tokens": response.usage.total_tokens,
+                        "cache_hit_tokens": getattr(response.usage, "prompt_cache_hit_tokens", 0) or 0,
+                        "cache_miss_tokens": getattr(response.usage, "prompt_cache_miss_tokens", 0) or 0,
+                    }
                 logger.debug("云端 API 响应: %.2fs, %d chars", elapsed, len(content))
                 return content
             except Exception as e:

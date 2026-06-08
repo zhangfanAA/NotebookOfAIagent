@@ -28,7 +28,7 @@ embedding:
   device: cpu
 
 vector_store:
-  persist_dir: ./data/chroma_db
+  persist_dir: ""
   collection_name: course_materials
 
 chunking:

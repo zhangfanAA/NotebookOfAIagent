@@ -9,8 +9,6 @@
 # MCP Server 作为子进程由 Supervisor Agent 按需启动，无需独立容器
 # ============================================
 
-version: "3.8"
-
 services:
   # ---- MySQL 数据库 ----
   mysql:

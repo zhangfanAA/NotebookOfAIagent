@@ -29,9 +29,9 @@ env/
 .env.local
 
 # 数据文件（本地生成，不入库）
-data/chroma_db/
-data/pdfs/
-logs/
+Backend/data/chroma_db/
+Backend/data/pdfs/
+Backend/logs/
 *.log
 
 # 测试
@@ -40,12 +40,12 @@ logs/
 htmlcov/
 
 # 隐私/敏感文档
-API.txt
-database.txt
-研发文档.txt
-docs/
-roles/
-uploads/
+Backend/API.txt
+Backend/database.txt
+Backend/研发文档.txt
+Backend/docs/
+Backend/roles/
+Backend/uploads/
 *.pdf
 
 # 系统文件
@@ -53,20 +53,23 @@ uploads/
 Thumbs.db
 
 # Next.js
-.next/
+Frontend/.next/
+
+# 前端依赖
+Frontend/node_modules/
 
 # Electron 构建产物
-EXEFront/node_modules/
-EXEFront/dist/
-EXEFront/dist-electron/
-EXEFront/release/
+exeFront/node_modules/
+exeFront/dist/
+exeFront/dist-electron/
+exeFront/release/
 
 # Claude Code
 .claude/
 
 # 模型文件
-models/
+Backend/models/
 
 # 临时测试文件
-test_*.png
-test_result.json
+Backend/test_*.png
+Backend/test_result.json

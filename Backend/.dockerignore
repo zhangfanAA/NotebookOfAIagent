@@ -30,5 +30,3 @@ database.txt
 models/
 .claude/
 .next/
-frontend/.next/
-frontend/node_modules/

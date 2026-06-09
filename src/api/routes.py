@@ -159,6 +159,11 @@ class ChatRequest(BaseModel):
     session_id: str
 
 
+class AgentChatRequest(BaseModel):
+    question: str
+    session_id: str = ""
+
+
 class SessionCreateRequest(BaseModel):
     title: str = "New Session"
 
@@ -917,7 +922,7 @@ async def export_session(sid: str, format: str = Query("md", regex="^(md|html)$"
     if not messages:
         raise HTTPException(status_code=404, detail="Session not found or empty")
 
-    from src.frontend.export import generate_export_md, generate_export_html
+    from src.utils.export import generate_export_md, generate_export_html
     if format == "html":
         content = generate_export_html(messages)
         media_type = "text/html"
@@ -1376,3 +1381,66 @@ async def download_file(file_id: int, user = Depends(get_current_user)):
         filename=record["file_name"],
         media_type="application/octet-stream",
     )
+
+
+# ===== Supervisor Agent =====
+
+@app.post("/api/agent/chat")
+async def agent_chat(request: Request, body: AgentChatRequest, user = Depends(get_current_user)):
+    """Supervisor Agent 非流式对话"""
+    check_rate_limit(request.client.host)
+    if not body.question.strip():
+        raise HTTPException(status_code=400, detail="Empty question")
+
+    uid = user["user_id"]
+
+    # 余额检查
+    from src.rag.llm_client import LLMClient
+    user_llm = LLMClient.for_user(uid)
+    if user_llm.provider == "balance" and user.get("role") != 2:
+        from src.database.user_repo import UserRepository
+        u = UserRepository().get_user(uid)
+        if u and float(u["balance"]) <= 0:
+            raise HTTPException(status_code=402, detail="余额不足，请联系管理员充值")
+
+    from src.supervisor.graph import SupervisorGraph
+
+    async with SupervisorGraph(user_id=uid, session_id=body.session_id or None) as supervisor:
+        result = await supervisor.ainvoke(body.question)
+
+    return result
+
+
+@app.post("/api/agent/stream")
+async def agent_stream(request: Request, body: AgentChatRequest, user = Depends(get_current_user)):
+    """Supervisor Agent SSE 流式对话"""
+    check_rate_limit(request.client.host)
+    if not body.question.strip():
+        raise HTTPException(status_code=400, detail="Empty question")
+
+    uid = user["user_id"]
+
+    # 余额检查
+    from src.rag.llm_client import LLMClient
+    user_llm = LLMClient.for_user(uid)
+    provider = user_llm.provider
+    if provider == "balance" and user.get("role") != 2:
+        from src.database.user_repo import UserRepository
+        u = UserRepository().get_user(uid)
+        if u and float(u["balance"]) <= 0:
+            raise HTTPException(status_code=402, detail="余额不足，请联系管理员充值")
+
+    async def event_generator():
+        from src.supervisor.graph import SupervisorGraph
+
+        async with SupervisorGraph(user_id=uid, session_id=body.session_id or None) as supervisor:
+            async for event in supervisor.astream(body.question):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    })

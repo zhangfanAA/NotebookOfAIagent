@@ -4,6 +4,9 @@
 # 启动全部服务: docker-compose up -d
 # 查看日志:     docker-compose logs -f
 # 停止服务:     docker-compose down
+#
+# 架构: MySQL + FastAPI(含 MCP/Supervisor) + Next.js
+# MCP Server 作为子进程由 Supervisor Agent 按需启动，无需独立容器
 # ============================================
 
 version: "3.8"
@@ -32,7 +35,7 @@ services:
     networks:
       - la-network
 
-  # ---- FastAPI 后端 ----
+  # ---- FastAPI 后端（含 Supervisor Agent + MCP Server）----
   api:
     build: .
     container_name: la-api
@@ -55,6 +58,7 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./config:/app/config
+      - ./uploads:/app/uploads
     depends_on:
       mysql:
         condition: service_healthy

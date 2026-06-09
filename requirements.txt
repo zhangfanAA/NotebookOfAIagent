@@ -3,7 +3,6 @@
 # ============================================
 
 # Web 框架
-streamlit>=1.30.0
 fastapi>=0.109.0
 uvicorn>=0.27.0
 
@@ -40,6 +39,13 @@ python-dotenv>=1.0.0
 pydantic>=2.0.0
 bcrypt>=4.0.0
 PyJWT>=2.8.0
+
+# MCP 服务器
+mcp>=1.0.0
+
+# Supervisor Agent
+langchain-mcp-adapters>=0.1.0
+langchain-openai>=0.3.0
 
 # 测试
 pytest>=7.4.0

@@ -27,3 +27,8 @@ deploy.sh
 API.txt
 database.txt
 研发文档.txt
+models/
+.claude/
+.next/
+frontend/.next/
+frontend/node_modules/

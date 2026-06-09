@@ -2,6 +2,9 @@
 # 智能学习助手 — Dockerfile (API 后端)
 # ============================================
 # 构建: docker build -t learning-assistant-api .
+#
+# 包含: FastAPI 后端 + MCP Server（stdio 子进程）+ Supervisor Agent
+# MCP Server 由 Supervisor Agent 按需启动为子进程，无需独立容器
 # ============================================
 
 FROM python:3.11-slim
@@ -20,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 复制依赖文件
 COPY requirements.txt .
 
-# 安装 Python 依赖
+# 安装 Python 依赖（含 MCP、langchain-mcp-adapters、langchain-openai）
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制项目文件
@@ -36,5 +39,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/api/status || exit 1
 
-# 默认启动 API 后端
+# 默认启动 API 后端（含 /api/agent/* Supervisor Agent 端点）
 CMD ["python", "main.py", "api", "--port", "8000", "--skip-check"]

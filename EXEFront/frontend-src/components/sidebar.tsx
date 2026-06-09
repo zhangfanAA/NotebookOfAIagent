@@ -143,11 +143,45 @@ export function Sidebar({
     const skippedFiles: string[] = [];
     let totalSkippedPages = 0;
     try {
+      // Electron 本地端：先检查 OCR 开关，再决定是否做本地 OCR
+      let localOcrEnabled = false;
+      if (api.isElectron()) {
+        try {
+          const ocrSetting = await api.checkPaddleOcrEnabled("app");
+          localOcrEnabled = ocrSetting.enabled;
+        } catch {
+          localOcrEnabled = false;
+        }
+      }
+
       for (let i = 0; i < uploadFiles.length; i++) {
+        setUploadProgress({ current: i, total: uploadFiles.length, message: `正在处理 ${uploadFiles[i].name}...` });
+        let localOcrDone = false;
+        // Electron 本地端：仅当 OCR 开关启用时才做本地 OCR
+        if (api.isElectron() && localOcrEnabled) {
+          try {
+            const ocrResult = await api.localPdfOcr(uploadFiles[i], (progress) => {
+              setUploadProgress({
+                current: i,
+                total: uploadFiles.length,
+                message: `[${progress.stage === 'ocr' ? 'OCR' : progress.stage === 'parsing' ? '解析' : progress.stage === 'done' ? '完成' : '处理'}] ${progress.message}`,
+              });
+            });
+            localOcrDone = true;
+            if (ocrResult.ocr_skipped) {
+              skippedFiles.push(uploadFiles[i].name);
+              totalSkippedPages += ocrResult.ocr_skipped_pages || 0;
+            }
+          } catch (ocrErr) {
+            console.warn("本地 OCR 失败，将使用服务端 OCR:", ocrErr);
+          }
+        }
         setUploadProgress({ current: i, total: uploadFiles.length, message: `正在上传 ${uploadFiles[i].name}...` });
-        const res = await api.uploadDocument(uploadFiles[i]);
+        const res = await api.uploadDocument(uploadFiles[i], localOcrDone);
         if (res.ocr_skipped) {
-          skippedFiles.push(uploadFiles[i].name);
+          if (!skippedFiles.includes(uploadFiles[i].name)) {
+            skippedFiles.push(uploadFiles[i].name);
+          }
           totalSkippedPages += res.ocr_skipped_pages || 0;
         }
       }

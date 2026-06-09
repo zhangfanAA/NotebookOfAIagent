@@ -25,7 +25,11 @@ import type {
 } from "./types";
 import { getToken, removeToken } from "./auth";
 
-const API_BASE = (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_API_URL) || "http://localhost:8000";
+// 部署时修改此处为服务器地址，例如 "https://api.example.com"
+// Vite 环境使用 import.meta.env.VITE_API_URL，Next.js 使用 process.env.NEXT_PUBLIC_API_URL
+const API_BASE = (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_API_URL) ||
+  (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_API_URL) ||
+  "http://localhost:8000";
 
 // 检测是否在 Electron 桌面端环境中运行
 function getClientType(): string {
@@ -33,6 +37,10 @@ function getClientType(): string {
     return "desktop";
   }
   return "web";
+}
+
+export function isElectron(): boolean {
+  return typeof window !== "undefined" && !!(window as any).electronAPI;
 }
 
 // ===== Generic fetch =====
@@ -226,11 +234,12 @@ export async function deleteDocument(docId: number): Promise<{ status: string }>
   return apiFetch(`/api/documents/${docId}`, { method: "DELETE" });
 }
 
-export async function uploadDocument(file: File): Promise<{ status: string; message: string; ocr_skipped?: boolean; ocr_skipped_pages?: number }> {
+export async function uploadDocument(file: File, skipOcr = false): Promise<{ status: string; message: string; ocr_skipped?: boolean; ocr_skipped_pages?: number }> {
   const token = getToken();
   const formData = new FormData();
   formData.append("file", file);
   const headers: Record<string, string> = { "X-Client-Type": getClientType() };
+  if (skipOcr) headers["X-Local-OCR-Done"] = "true";
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${API_BASE}/api/upload`, {
     method: "POST",
@@ -242,6 +251,41 @@ export async function uploadDocument(file: File): Promise<{ status: string; mess
     throw new Error(err.detail || `HTTP ${res.status}`);
   }
   return res.json();
+}
+
+// ===== 本地 OCR（仅 Electron 桌面端） =====
+
+export interface LocalPdfOcrResult {
+  pages: { content: string; page: number; source: string; file_type: string }[]
+  ocr_skipped: boolean
+  ocr_skipped_pages: number
+  ocr_pages: number
+  total_pages: number
+}
+
+export async function localPdfOcr(file: File, onProgress?: (progress: { stage: string; current: number; total: number; message: string }) => void): Promise<LocalPdfOcrResult> {
+  const electronAPI = (window as any).electronAPI;
+  if (!electronAPI?.localPdfOcr) {
+    throw new Error("本地 OCR 仅在桌面端可用");
+  }
+  // 将 File 写入临时文件，因为 Electron IPC 需要文件路径
+  const buffer = await file.arrayBuffer();
+  const tempPath = await electronAPI.saveTempFile?.(file.name, Array.from(new Uint8Array(buffer)));
+  if (!tempPath) {
+    throw new Error("无法创建临时文件");
+  }
+  // 监听进度事件
+  let removeListener: (() => void) | undefined;
+  if (onProgress && electronAPI.onOcrProgress) {
+    removeListener = electronAPI.onOcrProgress(onProgress);
+  }
+  try {
+    return await electronAPI.localPdfOcr(tempPath);
+  } finally {
+    removeListener?.();
+    // 清理临时文件
+    await electronAPI.deleteTempFile?.(tempPath).catch(() => {});
+  }
 }
 
 // ===== Generate Content =====

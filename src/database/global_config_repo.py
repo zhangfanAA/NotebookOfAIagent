@@ -75,11 +75,29 @@ class GlobalConfigRepository:
         logger.info("注册开关已设置为: %s", "开启" if allowed else "关闭")
 
     def get_paddle_ocr_enabled(self) -> bool:
-        """获取 PaddleOCR 开关状态"""
+        """获取 PaddleOCR 开关状态（网页端，向后兼容）"""
+        return self.get_paddle_ocr_web_enabled()
+
+    def set_paddle_ocr_enabled(self, enabled: bool):
+        """设置 PaddleOCR 开关（网页端，向后兼容）"""
+        self.set_paddle_ocr_web_enabled(enabled)
+
+    def get_paddle_ocr_web_enabled(self) -> bool:
+        """获取网页端 PaddleOCR 开关状态"""
         cfg = self.get(3)
         return cfg.get("base_url", "1") == "1"
 
-    def set_paddle_ocr_enabled(self, enabled: bool):
-        """设置 PaddleOCR 开关"""
+    def set_paddle_ocr_web_enabled(self, enabled: bool):
+        """设置网页端 PaddleOCR 开关"""
         self.update(3, base_url="1" if enabled else "0")
-        logger.info("PaddleOCR 开关已设置为: %s", "开启" if enabled else "关闭")
+        logger.info("网页端 PaddleOCR 开关已设置为: %s", "开启" if enabled else "关闭")
+
+    def get_paddle_ocr_app_enabled(self) -> bool:
+        """获取桌面端 PaddleOCR 开关状态"""
+        cfg = self.get(3)
+        return cfg.get("model", "1") == "1"
+
+    def set_paddle_ocr_app_enabled(self, enabled: bool):
+        """设置桌面端 PaddleOCR 开关"""
+        self.update(3, model="1" if enabled else "0")
+        logger.info("桌面端 PaddleOCR 开关已设置为: %s", "开启" if enabled else "关闭")

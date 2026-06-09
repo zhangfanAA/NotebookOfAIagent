@@ -1,105 +1,118 @@
 #!/bin/bash
 # ============================================
-# 智能学习助手 — Linux 服务器部署脚本
-# ============================================
-# 使用方法: chmod +x deploy.sh && ./deploy.sh
-#
-# 架构: MySQL + FastAPI(含 MCP/Supervisor) + Next.js
+# 智能学习助手 — VPS 后端部署脚本
+# 用法: 上传项目到服务器后执行 sudo bash deploy.sh
 # ============================================
 
 set -e
 
+PROJECT_DIR=$(cd "$(dirname "$0")" && pwd)
+DB_PASSWORD=$(openssl rand -hex 16)
+JWT_SECRET=$(openssl rand -hex 32)
+
 echo "=========================================="
-echo "  智能学习助手 — 服务器部署"
+echo "  智能学习助手 — 后端部署"
 echo "=========================================="
+echo "  项目目录: ${PROJECT_DIR}"
 
-# 检查 Docker 是否安装
-if ! command -v docker &> /dev/null; then
-    echo "❌ Docker 未安装，正在安装..."
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sudo sh get-docker.sh
-    sudo usermod -aG docker $USER
-    echo "✅ Docker 安装完成，请重新登录后运行此脚本"
-    exit 0
-fi
-
-# 检查 Docker Compose 是否安装
-if ! command -v docker-compose &> /dev/null; then
-    echo "❌ Docker Compose 未安装，正在安装..."
-    sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    sudo chmod +x /usr/local/bin/docker-compose
-    echo "✅ Docker Compose 安装完成"
-fi
-
-echo "✅ Docker 版本: $(docker --version)"
-echo "✅ Docker Compose 版本: $(docker-compose --version)"
-
-# 检查 .env 文件
-if [ ! -f .env ]; then
-    echo "⚠️  .env 文件不存在，正在从模板创建..."
-    cp .env.example .env
-    echo "📝 请编辑 .env 文件填写配置后重新运行此脚本"
-    echo "   vim .env"
-    exit 0
-fi
-
+# 1. 系统依赖
 echo ""
-echo "=========================================="
-echo "  开始部署..."
-echo "=========================================="
+echo "[1/5] 安装系统依赖..."
+apt-get update -qq
+apt-get install -y -qq python3 python3-pip python3-venv mysql-server libmysqlclient-dev > /dev/null 2>&1
+echo "  ✅ Python3 + MySQL 已安装"
 
-# 停止旧容器
-echo "🛑 停止旧容器..."
-docker-compose down 2>/dev/null || true
-
-# 构建镜像
-echo "🔨 构建 Docker 镜像..."
-docker-compose build
-
-# 启动服务
-echo "🚀 启动服务..."
-docker-compose up -d
-
-# 等待服务启动
-echo "⏳ 等待服务启动..."
-sleep 15
-
-# 检查服务状态
+# 2. MySQL
 echo ""
-echo "=========================================="
-echo "  服务状态"
-echo "=========================================="
-docker-compose ps
+echo "[2/5] 配置 MySQL..."
+systemctl start mysql
+systemctl enable mysql
+
+mysql -u root <<EOF
+CREATE DATABASE IF NOT EXISTS project CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS 'learner'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';
+GRANT ALL PRIVILEGES ON project.* TO 'learner'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+echo "  ✅ 数据库 project 已创建"
+
+# 3. Python 虚拟环境
+echo ""
+echo "[3/5] 创建 Python 环境..."
+cd "${PROJECT_DIR}"
+python3 -m venv venv
+source venv/bin/activate
+pip install -q --upgrade pip
+# 服务端不需要 paddleocr（OCR 在客户端本地跑）
+grep -v -E "paddle(paddle|ocr)" requirements.txt > /tmp/req-server.txt
+pip install -q -r /tmp/req-server.txt
+rm /tmp/req-server.txt
+echo "  ✅ Python 依赖已安装（已跳过 PaddleOCR）"
+
+# 4. 环境配置
+echo ""
+echo "[4/5] 生成配置..."
+cat > .env <<EOF
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=learner
+DB_PASSWORD=${DB_PASSWORD}
+DB_NAME=project
+JWT_SECRET=${JWT_SECRET}
+APP_HOST=0.0.0.0
+APP_PORT=8000
+EOF
+
+mkdir -p data/pdfs data/chroma_db
+echo "  ✅ .env 已生成"
+
+# 5. Systemd 服务
+echo ""
+echo "[5/5] 创建系统服务..."
+cat > /etc/systemd/system/learning-assistant.service <<EOF
+[Unit]
+Description=Learning Assistant Backend
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${PROJECT_DIR}
+EnvironmentFile=${PROJECT_DIR}/.env
+ExecStart=${PROJECT_DIR}/venv/bin/python -m uvicorn src.api.routes:app --host 0.0.0.0 --port 8000 --workers 2
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable learning-assistant
+systemctl start learning-assistant
 
 # 获取服务器 IP
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
 echo ""
 echo "=========================================="
-echo "  部署完成！"
+echo "  ✅ 部署完成！"
 echo "=========================================="
 echo ""
-echo "📌 访问地址:"
-echo "   前端: http://${SERVER_IP}:3000"
-echo "   API:  http://${SERVER_IP}:8000"
-echo "   API 文档: http://${SERVER_IP}:8000/docs"
+echo "  服务状态:  systemctl status learning-assistant"
+echo "  查看日志:  journalctl -u learning-assistant -f"
+echo "  重启服务:  systemctl restart learning-assistant"
 echo ""
-echo "📌 API 端点:"
-echo "   传统聊天: POST /api/chat/stream"
-echo "   Agent:    POST /api/agent/stream"
+echo "  数据库密码: ${DB_PASSWORD}"
+echo "  JWT 密钥:   ${JWT_SECRET}"
+echo "  （请妥善保管，已写入 ${PROJECT_DIR}/.env）"
 echo ""
-echo "📌 MCP Server（由 Agent 自动启动，无需手动操作）:"
-echo "   RAG:      python -m src.mcp_servers.rag_server"
-echo "   学习工具: python -m src.mcp_servers.learning_tools_server"
-echo "   OCR:      python -m src.mcp_servers.ocr_server"
+echo "  API 地址:  http://${SERVER_IP}:8000"
+echo "  API 文档:  http://${SERVER_IP}:8000/docs"
 echo ""
-echo "📌 常用命令:"
-echo "   查看日志: docker-compose logs -f"
-echo "   停止服务: docker-compose down"
-echo "   重启服务: docker-compose restart"
-echo "   查看状态: docker-compose ps"
+echo "  EXEFront 客户端配置:"
+echo "  在 EXEFront/.env 中写入:"
+echo "  VITE_API_URL=http://${SERVER_IP}:8000"
 echo ""
-echo "📌 默认管理员账号:"
-echo "   用户名: admin"
-echo "   密码: zf051110"
-echo ""
+echo "  默认管理员: admin / zf051110"
+echo "=========================================="

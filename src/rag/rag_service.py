@@ -165,9 +165,9 @@ class RAGService:
 
     # ===== 文档相关 =====
 
-    def upload_document(self, file_path: str, original_filename: str = None, user_id: int = None) -> dict:
+    def upload_document(self, file_path: str, original_filename: str = None, user_id: int = None, client_type: str = "web", skip_ocr: bool = False) -> dict:
         """上传文档"""
-        result = self._doc_mgr.upload_document(file_path, original_filename, user_id)
+        result = self._doc_mgr.upload_document(file_path, original_filename, user_id, client_type=client_type, skip_ocr=skip_ocr)
         self._cache.invalidate("documents")
         self._cache.invalidate("vdb_stats")
         return result

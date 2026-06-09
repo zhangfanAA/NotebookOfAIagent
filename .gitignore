@@ -51,3 +51,22 @@ uploads/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# Next.js
+.next/
+
+# Electron 构建产物
+EXEFront/node_modules/
+EXEFront/dist/
+EXEFront/dist-electron/
+EXEFront/release/
+
+# Claude Code
+.claude/
+
+# 模型文件
+models/
+
+# 临时测试文件
+test_*.png
+test_result.json

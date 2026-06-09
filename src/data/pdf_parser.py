@@ -31,10 +31,18 @@ _gpu_available = None
 
 
 def _is_paddle_ocr_enabled() -> bool:
-    """检查 PaddleOCR 是否启用"""
+    """检查 PaddleOCR 是否启用（向后兼容，默认网页端）"""
+    return _is_paddle_ocr_enabled_for_client("web")
+
+
+def _is_paddle_ocr_enabled_for_client(client_type: str = "web") -> bool:
+    """检查指定客户端的 PaddleOCR 是否启用"""
     try:
         from src.database.global_config_repo import GlobalConfigRepository
-        return GlobalConfigRepository().get_paddle_ocr_enabled()
+        repo = GlobalConfigRepository()
+        if client_type == "app":
+            return repo.get_paddle_ocr_app_enabled()
+        return repo.get_paddle_ocr_web_enabled()
     except Exception:
         return True
 
@@ -196,7 +204,7 @@ def _ocr_pages_batch(pdf_path: str, page_indices: list, dpi: int = 200) -> dict:
     return all_results
 
 
-def parse_pdf(file_path: str) -> dict:
+def parse_pdf(file_path: str, client_type: str = "web", skip_ocr: bool = False) -> dict:
     """
     解析 PDF 文件，提取每页文本
 
@@ -205,6 +213,8 @@ def parse_pdf(file_path: str) -> dict:
 
     Args:
         file_path: PDF 文件路径
+        client_type: 客户端类型 (web/app)
+        skip_ocr: 跳过 OCR（桌面端本地已完成 OCR）
 
     Returns:
         {
@@ -231,7 +241,7 @@ def parse_pdf(file_path: str) -> dict:
         raise ValueError(f"文件不是 PDF 格式: {file_path}")
 
     source_name = path.name
-    paddle_enabled = _is_paddle_ocr_enabled()
+    paddle_enabled = _is_paddle_ocr_enabled_for_client(client_type) and not skip_ocr
 
     try:
         doc = fitz.open(file_path)

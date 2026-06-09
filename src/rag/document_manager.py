@@ -30,7 +30,7 @@ class DocumentManager:
     def __init__(self):
         self._doc_repo = DocumentRepository()
 
-    def upload_document(self, file_path: str, original_filename: str = None, user_id: int = None) -> dict:
+    def upload_document(self, file_path: str, original_filename: str = None, user_id: int = None, client_type: str = "web", skip_ocr: bool = False) -> dict:
         """
         文档上传与入库
 
@@ -38,6 +38,8 @@ class DocumentManager:
             file_path: 文件本地路径
             original_filename: 用户上传时的原始文件名（中文等），为 None 时从 file_path 提取
             user_id: 用户 ID
+            client_type: 客户端类型 (web/app)
+            skip_ocr: 跳过 OCR（桌面端本地已完成 OCR）
 
         Returns:
             成功: {"status": "success", "chunks_count": int, "message": str}
@@ -70,7 +72,7 @@ class DocumentManager:
         try:
             # 解析 PDF
             if file_type == "pdf":
-                result = parse_pdf(file_path)
+                result = parse_pdf(file_path, client_type=client_type, skip_ocr=skip_ocr)
                 pages = result["pages"]
                 ocr_skipped = result.get("ocr_skipped", False)
                 ocr_skipped_pages = result.get("ocr_skipped_pages", 0)

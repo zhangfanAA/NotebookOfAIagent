@@ -30,11 +30,11 @@ async def global_exception_handler(request: Request, exc: Exception):
     return HTTPException(status_code=500, detail=f"服务器内部错误: {str(exc)[:200]}")
 
 
-# CORS 配置
+# CORS 配置（使用 Bearer Token 认证，非 Cookie，允许所有来源）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://127.0.0.1:3000"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -398,6 +398,11 @@ async def upload_document(request: Request, file: UploadFile = File(...), user =
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="文件大小超过限制（最大 50MB）")
 
+    # 读取客户端类型（web/app），决定使用哪个 OCR 开关
+    client_type = request.headers.get("X-Client-Type", "web")
+    # 桌面端本地 OCR 已完成时，跳过服务端 OCR
+    local_ocr_done = request.headers.get("X-Local-OCR-Done", "false").lower() == "true"
+
     suffix = os.path.splitext(file.filename)[1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(content)
@@ -406,7 +411,7 @@ async def upload_document(request: Request, file: UploadFile = File(...), user =
     def _do_upload():
         try:
             rag = get_rag()
-            return rag.upload_document(tmp_path, original_filename=file.filename, user_id=user["user_id"])
+            return rag.upload_document(tmp_path, original_filename=file.filename, user_id=user["user_id"], client_type=client_type, skip_ocr=local_ocr_done)
         finally:
             os.unlink(tmp_path)
 
@@ -1134,29 +1139,48 @@ async def admin_set_registration(body: RegistrationSettingRequest, user = Depend
 
 @app.get("/api/admin/settings/paddle-ocr")
 async def admin_get_paddle_ocr(user = Depends(get_admin_user)):
-    """获取 PaddleOCR 开关状态（管理员）"""
+    """获取 PaddleOCR 开关状态（管理员，返回网页端和桌面端两个开关）"""
     from src.database.global_config_repo import GlobalConfigRepository
-    enabled = GlobalConfigRepository().get_paddle_ocr_enabled()
-    return {"enabled": enabled}
+    repo = GlobalConfigRepository()
+    return {
+        "enabled": repo.get_paddle_ocr_web_enabled(),
+        "web_enabled": repo.get_paddle_ocr_web_enabled(),
+        "app_enabled": repo.get_paddle_ocr_app_enabled(),
+    }
 
 
 class PaddleOcrSettingRequest(BaseModel):
-    enabled: bool
+    enabled: bool | None = None        # 向后兼容，映射到 web
+    web_enabled: bool | None = None
+    app_enabled: bool | None = None
 
 
 @app.put("/api/admin/settings/paddle-ocr")
 async def admin_set_paddle_ocr(body: PaddleOcrSettingRequest, user = Depends(get_admin_user)):
-    """设置 PaddleOCR 开关（管理员）"""
+    """设置 PaddleOCR 开关（管理员，可分别设置网页端和桌面端）"""
     from src.database.global_config_repo import GlobalConfigRepository
-    GlobalConfigRepository().set_paddle_ocr_enabled(body.enabled)
-    return {"enabled": body.enabled}
+    repo = GlobalConfigRepository()
+    if body.web_enabled is not None:
+        repo.set_paddle_ocr_web_enabled(body.web_enabled)
+    elif body.enabled is not None:
+        repo.set_paddle_ocr_web_enabled(body.enabled)
+    if body.app_enabled is not None:
+        repo.set_paddle_ocr_app_enabled(body.app_enabled)
+    return {
+        "web_enabled": repo.get_paddle_ocr_web_enabled(),
+        "app_enabled": repo.get_paddle_ocr_app_enabled(),
+    }
 
 
 @app.get("/api/settings/paddle-ocr")
-async def get_paddle_ocr_status():
-    """获取 PaddleOCR 开关状态（公开，无需认证）"""
+async def get_paddle_ocr_status(client_type: str = "web"):
+    """获取 PaddleOCR 开关状态（公开，无需认证，根据客户端类型返回对应开关）"""
     from src.database.global_config_repo import GlobalConfigRepository
-    enabled = GlobalConfigRepository().get_paddle_ocr_enabled()
+    repo = GlobalConfigRepository()
+    if client_type == "app":
+        enabled = repo.get_paddle_ocr_app_enabled()
+    else:
+        enabled = repo.get_paddle_ocr_web_enabled()
     return {"enabled": enabled}
 
 

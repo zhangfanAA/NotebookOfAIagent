@@ -1,3 +1,8 @@
+/**
+ * Electron 桌面端 API 客户端
+ * 与 web 版 api.ts 相同的接口，但所有请求附带 X-Client-Type: desktop header
+ */
+
 import type {
   Session,
   Message,
@@ -22,17 +27,14 @@ import type {
   UsageLogsResponse,
   SiteMessage,
   DownloadFile,
-} from "./types";
-import { getToken, removeToken } from "./auth";
+} from "@/lib/types";
+import { getToken, removeToken } from "@electron/lib/auth";
 
-const API_BASE = (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_API_URL) || "http://localhost:8000";
+// 部署时修改此处为服务器地址，例如 "https://api.example.com"
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
-// 检测是否在 Electron 桌面端环境中运行
-function getClientType(): string {
-  if (typeof window !== "undefined" && (window as any).electronAPI) {
-    return "desktop";
-  }
-  return "web";
+export function isElectron(): boolean {
+  return typeof window !== "undefined" && !!(window as any).electronAPI;
 }
 
 // ===== Generic fetch =====
@@ -41,7 +43,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "X-Client-Type": getClientType(),
+    "X-Client-Type": "desktop",
     ...(options?.headers as Record<string, string> || {}),
   };
   if (token) {
@@ -55,9 +57,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (res.status === 401) {
     removeToken();
-    if (typeof window !== "undefined") {
-      window.location.href = "/login";
-    }
+    window.dispatchEvent(new Event("auth-change"));
     throw new Error("登录已过期，请重新登录");
   }
 
@@ -73,7 +73,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 export async function login(username: string, password: string): Promise<{ token: string; username: string; role: number }> {
   const res = await fetch(`${API_BASE}/api/auth/login`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Client-Type": "desktop" },
     body: JSON.stringify({ username, password }),
   });
   if (!res.ok) {
@@ -86,7 +86,7 @@ export async function login(username: string, password: string): Promise<{ token
 export async function register(username: string, password: string): Promise<{ token: string; username: string; role: number }> {
   const res = await fetch(`${API_BASE}/api/auth/register`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Client-Type": "desktop" },
     body: JSON.stringify({ username, password }),
   });
   if (!res.ok) {
@@ -159,7 +159,10 @@ export function chatStream(
   (async () => {
     try {
       const token = getToken();
-      const headers: Record<string, string> = { "Content-Type": "application/json", "X-Client-Type": getClientType() };
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "X-Client-Type": "desktop",
+      };
       if (token) headers["Authorization"] = `Bearer ${token}`;
       const res = await fetch(`${API_BASE}/api/chat/stream`, {
         method: "POST",
@@ -226,11 +229,12 @@ export async function deleteDocument(docId: number): Promise<{ status: string }>
   return apiFetch(`/api/documents/${docId}`, { method: "DELETE" });
 }
 
-export async function uploadDocument(file: File): Promise<{ status: string; message: string; ocr_skipped?: boolean; ocr_skipped_pages?: number }> {
+export async function uploadDocument(file: File, skipOcr = false): Promise<{ status: string; message: string; ocr_skipped?: boolean; ocr_skipped_pages?: number }> {
   const token = getToken();
   const formData = new FormData();
   formData.append("file", file);
-  const headers: Record<string, string> = { "X-Client-Type": getClientType() };
+  const headers: Record<string, string> = { "X-Client-Type": "desktop" };
+  if (skipOcr) headers["X-Local-OCR-Done"] = "true";
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${API_BASE}/api/upload`, {
     method: "POST",
@@ -242,6 +246,41 @@ export async function uploadDocument(file: File): Promise<{ status: string; mess
     throw new Error(err.detail || `HTTP ${res.status}`);
   }
   return res.json();
+}
+
+// ===== 本地 OCR（仅 Electron 桌面端） =====
+
+export interface LocalPdfOcrResult {
+  pages: { content: string; page: number; source: string; file_type: string }[]
+  ocr_skipped: boolean
+  ocr_skipped_pages: number
+  ocr_pages: number
+  total_pages: number
+}
+
+export async function localPdfOcr(file: File, onProgress?: (progress: { stage: string; current: number; total: number; message: string }) => void): Promise<LocalPdfOcrResult> {
+  const electronAPI = (window as any).electronAPI;
+  if (!electronAPI?.localPdfOcr) {
+    throw new Error("本地 OCR 仅在桌面端可用");
+  }
+  // 将 File 写入临时文件，因为 Electron IPC 需要文件路径
+  const buffer = await file.arrayBuffer();
+  const tempPath = await electronAPI.saveTempFile(file.name, Array.from(new Uint8Array(buffer)));
+  if (!tempPath) {
+    throw new Error("无法创建临时文件");
+  }
+  // 监听进度事件
+  let removeListener: (() => void) | undefined;
+  if (onProgress && electronAPI.onOcrProgress) {
+    removeListener = electronAPI.onOcrProgress(onProgress);
+  }
+  try {
+    return await electronAPI.localPdfOcr(tempPath);
+  } finally {
+    removeListener?.();
+    // 清理临时文件
+    await electronAPI.deleteTempFile(tempPath).catch(() => {});
+  }
 }
 
 // ===== Generate Content =====
@@ -578,7 +617,7 @@ export async function updatePaddleOcrSetting(data: { web_enabled?: boolean; app_
   });
 }
 
-export async function checkPaddleOcrEnabled(clientType = "web"): Promise<{ enabled: boolean }> {
+export async function checkPaddleOcrEnabled(clientType = "app"): Promise<{ enabled: boolean }> {
   const res = await fetch(`${API_BASE}/api/settings/paddle-ocr?client_type=${clientType}`);
   if (!res.ok) throw new Error("Failed to check paddle ocr setting");
   return res.json();
@@ -630,7 +669,7 @@ export async function uploadDownloadFile(file: File): Promise<{ id: number; stat
   const token = getToken();
   const formData = new FormData();
   formData.append("file", file);
-  const headers: Record<string, string> = { "X-Client-Type": getClientType() };
+  const headers: Record<string, string> = { "X-Client-Type": "desktop" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${API_BASE}/api/downloads`, {
     method: "POST",

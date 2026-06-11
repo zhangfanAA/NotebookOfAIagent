@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+pymupdf
+requests
+paddlepaddle>=2.6.0
+paddleocr>=2.8.0,<3.0.0

@@ -7,15 +7,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle,
-  DialogDescription, DialogFooter,
-} from "@/components/ui/dialog";
-import {
   Sun, Moon, Plus, Search, Trash2, Pencil, Check, X,
   Map, FileQuestion, Layers, BarChart3, GitCompare,
   Upload, FileText, Database, ChevronDown, ChevronRight,
   Download, BookOpen, Bookmark, StickyNote, Heart, Settings, LogOut,
-  Shield, Wallet, Bell, AlertTriangle,
+  Shield, Wallet, Bell,
 } from "lucide-react";
 import type { PanelType, Session, Message, Document } from "@/lib/types";
 import * as api from "@/lib/api";
@@ -47,9 +43,6 @@ export function Sidebar({
   const [uploadFiles, setUploadFiles] = useState<FileList | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number; message: string } | null>(null);
-  const [ocrWarning, setOcrWarning] = useState<{ show: boolean; files: string[]; pages: number }>({
-    show: false, files: [], pages: 0,
-  });
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     sessions: true,
     upload: false,
@@ -138,25 +131,40 @@ export function Sidebar({
 
   const handleUpload = async () => {
     if (!uploadFiles?.length) return;
+
+    const mode = (localStorage.getItem("ocr_mode") as string) || "cloud";
+    const token = api.getCloudOcrToken();
+
     setIsUploading(true);
     setUploadProgress({ current: 0, total: uploadFiles.length, message: "准备上传..." });
-    const skippedFiles: string[] = [];
-    let totalSkippedPages = 0;
+
+    if (mode === "cloud" && token) {
+      try {
+        for (let i = 0; i < uploadFiles.length; i++) {
+          setUploadProgress({ current: i, total: uploadFiles.length, message: `正在云端 OCR 处理 ${uploadFiles[i].name}...` });
+          await api.cloudOcrWeb(uploadFiles[i], token, (msg) => {
+            setUploadProgress((prev) => prev ? { ...prev, message: msg } : null);
+          });
+        }
+        setUploadFiles(null);
+        await loadDocuments();
+      } catch (e) {
+        console.error("Cloud OCR failed:", e);
+        alert(`云端 OCR 失败: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setIsUploading(false);
+        setUploadProgress(null);
+      }
+      return;
+    }
+
     try {
       for (let i = 0; i < uploadFiles.length; i++) {
         setUploadProgress({ current: i, total: uploadFiles.length, message: `正在上传 ${uploadFiles[i].name}...` });
-        const res = await api.uploadDocument(uploadFiles[i]);
-        if (res.ocr_skipped) {
-          skippedFiles.push(uploadFiles[i].name);
-          totalSkippedPages += res.ocr_skipped_pages || 0;
-        }
+        await api.uploadDocument(uploadFiles[i]);
       }
       setUploadFiles(null);
       await loadDocuments();
-      // 如果有扫描页被跳过，显示警告
-      if (skippedFiles.length > 0) {
-        setOcrWarning({ show: true, files: skippedFiles, pages: totalSkippedPages });
-      }
     } catch (e) {
       console.error("Upload failed:", e);
     } finally {
@@ -453,41 +461,6 @@ export function Sidebar({
         <SystemStatus />
       </div>
 
-      {/* OCR Warning Dialog */}
-      <Dialog open={ocrWarning.show} onOpenChange={(open) => !open && setOcrWarning({ show: false, files: [], pages: 0 })}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-yellow-500" />
-              扫描页内容跳过提醒
-            </DialogTitle>
-            <DialogDescription>
-              检测到您上传的 PDF 包含扫描型（图片）页面，但当前 PaddleOCR 功能未启用，这些页面的文字内容无法被识别。
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3 py-2">
-            <div className="rounded-lg bg-yellow-50 dark:bg-yellow-950/30 border border-yellow-200 dark:border-yellow-800 p-3">
-              <p className="text-sm font-medium text-yellow-800 dark:text-yellow-200">受影响的文件：</p>
-              <ul className="mt-1 text-xs text-yellow-700 dark:text-yellow-300 space-y-0.5">
-                {ocrWarning.files.map((f, i) => (
-                  <li key={i}>• {f}</li>
-                ))}
-              </ul>
-              <p className="mt-2 text-xs text-yellow-700 dark:text-yellow-300">
-                共跳过 <span className="font-semibold">{ocrWarning.pages}</span> 页扫描内容
-              </p>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              如需支持扫描型 PDF，请联系管理员在「用户管理 → 系统设置」中启用 PaddleOCR 功能。
-            </p>
-          </div>
-          <DialogFooter>
-            <Button onClick={() => setOcrWarning({ show: false, files: [], pages: 0 })}>
-              我知道了
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

@@ -11,6 +11,13 @@ export interface ElectronAPI {
     ocr_pages: number
     total_pages: number
   }>
+  cloudPdfOcr: (pdfPath: string, token: string) => Promise<{
+    pages: { content: string; page: number; source: string; file_type: string }[]
+    ocr_skipped: boolean
+    ocr_skipped_pages: number
+    ocr_pages: number
+    total_pages: number
+  }>
   onOcrProgress: (callback: (progress: { stage: string; current: number; total: number; message: string }) => void) => () => void
   saveTempFile: (fileName: string, data: number[]) => Promise<string>
   deleteTempFile: (filePath: string) => Promise<boolean>
@@ -23,6 +30,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   localOcr: (imagePath: string) => ipcRenderer.invoke('local-ocr', imagePath),
   localPdfOcr: (pdfPath: string) => ipcRenderer.invoke('local-pdf-ocr', pdfPath),
+  cloudPdfOcr: (pdfPath: string, token: string) => ipcRenderer.invoke('cloud-pdf-ocr', pdfPath, token),
   onOcrProgress: (callback: (progress: { stage: string; current: number; total: number; message: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, progress: { stage: string; current: number; total: number; message: string }) => {
       callback(progress)

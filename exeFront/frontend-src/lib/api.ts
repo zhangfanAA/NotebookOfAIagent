@@ -288,6 +288,56 @@ export async function localPdfOcr(file: File, onProgress?: (progress: { stage: s
   }
 }
 
+// ===== 云端 OCR（仅 Electron 桌面端） =====
+
+export async function cloudPdfOcr(
+  file: File,
+  token: string,
+  onProgress?: (progress: { stage: string; current: number; total: number; message: string }) => void
+): Promise<LocalPdfOcrResult> {
+  const electronAPI = (window as any).electronAPI;
+  if (!electronAPI?.cloudPdfOcr) {
+    throw new Error("云端 OCR 仅在桌面端可用");
+  }
+  const buffer = await file.arrayBuffer();
+  const tempPath = await electronAPI.saveTempFile?.(file.name, Array.from(new Uint8Array(buffer)));
+  if (!tempPath) {
+    throw new Error("无法创建临时文件");
+  }
+  let removeListener: (() => void) | undefined;
+  if (onProgress && electronAPI.onOcrProgress) {
+    removeListener = electronAPI.onOcrProgress(onProgress);
+  }
+  try {
+    return await electronAPI.cloudPdfOcr(tempPath, token);
+  } finally {
+    removeListener?.();
+    await electronAPI.deleteTempFile?.(tempPath).catch(() => {});
+  }
+}
+
+export function getCloudOcrToken(): string {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem("cloud_ocr_token") || "";
+}
+
+export function setCloudOcrToken(token: string): void {
+  if (typeof window === "undefined") return;
+  if (token) {
+    localStorage.setItem("cloud_ocr_token", token);
+  } else {
+    localStorage.removeItem("cloud_ocr_token");
+  }
+}
+
+export function extractBearerToken(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed.toLowerCase().startsWith("bearer ")) {
+    return trimmed.slice(7).trim();
+  }
+  return trimmed;
+}
+
 // ===== Generate Content =====
 
 export async function generateMindmap(fileNames: string[], prompt = ""): Promise<GenerateResponse> {
@@ -626,10 +676,6 @@ export async function checkPaddleOcrEnabled(clientType = "web"): Promise<{ enabl
   const res = await fetch(`${API_BASE}/api/settings/paddle-ocr?client_type=${clientType}`);
   if (!res.ok) throw new Error("Failed to check paddle ocr setting");
   return res.json();
-}
-
-export async function getPaddleOcrGpuStatus(): Promise<{ gpu_available: boolean; device: string; details?: string }> {
-  return apiFetch("/api/settings/paddle-ocr/gpu");
 }
 
 // ===== Site Messages =====

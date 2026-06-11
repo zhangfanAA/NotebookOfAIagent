@@ -415,7 +415,6 @@ function SettingsTab() {
   const [allowRegistration, setAllowRegistration] = useState(true);
   const [paddleOcrWebEnabled, setPaddleOcrWebEnabled] = useState(true);
   const [paddleOcrAppEnabled, setPaddleOcrAppEnabled] = useState(true);
-  const [gpuStatus, setGpuStatus] = useState<{ gpu_available: boolean; device: string; details?: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
 
@@ -423,12 +422,10 @@ function SettingsTab() {
     Promise.all([
       api.getRegistrationSetting(),
       api.getPaddleOcrSetting(),
-      api.getPaddleOcrGpuStatus(),
-    ]).then(([regRes, paddleRes, gpuRes]) => {
+    ]).then(([regRes, paddleRes]) => {
       setAllowRegistration(regRes.allow_registration);
       setPaddleOcrWebEnabled(paddleRes.web_enabled);
       setPaddleOcrAppEnabled(paddleRes.app_enabled);
-      setGpuStatus(gpuRes);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
@@ -571,22 +568,30 @@ function SettingsTab() {
             />
           </button>
         </div>
-        <div className="text-xs text-muted-foreground -mt-2 space-y-1">
+        <div className="text-xs text-muted-foreground -mt-2">
           <div>当前状态：{paddleOcrAppEnabled ? "已启用（支持扫描型 PDF）" : "已禁用（仅支持文字型 PDF）"}</div>
-          {gpuStatus && (
-            <div className="flex items-center gap-1.5">
-              <span>计算设备：</span>
-              <Badge variant={gpuStatus.gpu_available ? "default" : "secondary"} className="text-[10px]">
-                {gpuStatus.device}
-              </Badge>
-              {gpuStatus.details && (
-                <span className="text-muted-foreground">({gpuStatus.details})</span>
-              )}
-              {gpuStatus.gpu_available && (
-                <span className="text-green-600">✓ GPU 加速</span>
-              )}
+        </div>
+
+        {/* 服务器 OCR 开关（待开发） */}
+        <div className="flex items-center justify-between rounded-lg border p-4 opacity-60">
+          <div className="space-y-0.5">
+            <div className="text-sm font-medium flex items-center gap-2">
+              启用服务器 OCR
+              <Badge variant="secondary" className="text-[10px] px-1 py-0">待开发</Badge>
             </div>
-          )}
+            <div className="text-xs text-muted-foreground">
+              启用后可通过独立 OCR 服务器处理扫描型 PDF
+            </div>
+          </div>
+          <button
+            disabled
+            className="relative inline-flex h-6 w-11 shrink-0 cursor-not-allowed rounded-full border-2 border-transparent bg-muted-foreground/30"
+          >
+            <span className="pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-lg ring-0 translate-x-0" />
+          </button>
+        </div>
+        <div className="text-xs text-muted-foreground -mt-2">
+          当前状态：未启用（功能开发中）
         </div>
       </CardContent>
     </Card>

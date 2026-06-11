@@ -584,8 +584,40 @@ export async function checkPaddleOcrEnabled(clientType = "web"): Promise<{ enabl
   return res.json();
 }
 
-export async function getPaddleOcrGpuStatus(): Promise<{ gpu_available: boolean; device: string; details?: string }> {
-  return apiFetch("/api/settings/paddle-ocr/gpu");
+// ===== Cloud OCR (Web 端通过后端代理) =====
+
+export async function cloudOcrWeb(file: File, token: string, onProgress?: (msg: string) => void): Promise<{ pages: any[]; total_pages: number; ocr_pages: number }> {
+  onProgress?.("正在上传文件到云端 OCR...");
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${API_BASE}/api/ocr/cloud`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export function getCloudOcrToken(): string {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem("cloud_ocr_token") || "";
+}
+
+export function setCloudOcrToken(token: string): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem("cloud_ocr_token", token);
+}
+
+export function extractBearerToken(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed.toLowerCase().startsWith("bearer ")) {
+    return trimmed.slice(7).trim();
+  }
+  return trimmed;
 }
 
 // ===== Site Messages =====

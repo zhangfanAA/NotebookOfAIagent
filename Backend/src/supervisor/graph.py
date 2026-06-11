@@ -11,8 +11,6 @@ Supervisor Agent — LangGraph ReAct Agent 调度 MCP 工具
 """
 
 import sys
-import json
-from typing import Annotated
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessageChunk
 from langchain_core.tools import StructuredTool, BaseTool
@@ -118,12 +116,6 @@ def _build_mcp_config() -> dict:
             "transport": "stdio",
             "command": sys.executable,
             "args": ["-m", "src.mcp_servers.learning_tools_server"],
-            "cwd": project_root,
-        },
-        "ocr": {
-            "transport": "stdio",
-            "command": sys.executable,
-            "args": ["-m", "src.mcp_servers.ocr_server"],
             "cwd": project_root,
         },
     }

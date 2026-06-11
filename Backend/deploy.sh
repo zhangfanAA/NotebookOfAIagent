@@ -43,11 +43,8 @@ cd "${PROJECT_DIR}"
 python3 -m venv venv
 source venv/bin/activate
 pip install -q --upgrade pip
-# 服务端不需要 paddleocr（OCR 在客户端本地跑）
-grep -v -E "paddle(paddle|ocr)" requirements.txt > /tmp/req-server.txt
-pip install -q -r /tmp/req-server.txt
-rm /tmp/req-server.txt
-echo "  ✅ Python 依赖已安装（已跳过 PaddleOCR）"
+pip install -q -r requirements.txt
+echo "  ✅ Python 依赖已安装"
 
 # 4. 环境配置
 echo ""

@@ -165,6 +165,66 @@ ipcMain.handle('local-pdf-ocr', async (event, pdfPath: string) => {
   })
 })
 
+// Cloud PDF OCR via Python subprocess (PaddleOCR cloud API)
+ipcMain.handle('cloud-pdf-ocr', async (_event, pdfPath: string, token: string) => {
+  return new Promise((resolve, reject) => {
+    const scriptPath = getScriptPath('cloud-pdf-parser.py')
+    const python = findPython()
+
+    if (!fs.existsSync(pdfPath)) {
+      reject(new Error(`文件不存在: ${pdfPath}`))
+      return
+    }
+    if (!token) {
+      reject(new Error('未提供云端 OCR Token'))
+      return
+    }
+
+    const proc = spawn(python, [scriptPath, pdfPath, token], {
+      timeout: 600000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+    })
+
+    let stdout = ''
+    let stderr = ''
+
+    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
+
+    proc.stderr.on('data', (d: Buffer) => {
+      const text = d.toString()
+      stderr += text
+      for (const line of text.split('\n')) {
+        if (line.includes('[PROGRESS]')) {
+          try {
+            const jsonStr = line.substring(line.indexOf('[PROGRESS]') + 10)
+            const progress = JSON.parse(jsonStr)
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('ocr-progress', progress)
+            }
+          } catch {}
+        }
+      }
+    })
+
+    proc.on('close', (code: number | null) => {
+      if (code === 0) {
+        try {
+          resolve(JSON.parse(stdout))
+        } catch {
+          reject(new Error('云端 OCR 输出解析失败'))
+        }
+      } else {
+        reject(new Error(stderr || `云端 OCR 进程退出码: ${code}`))
+      }
+    })
+
+    proc.on('error', (err: Error) => {
+      reject(new Error(`启动云端 OCR 进程失败: ${err.message}`))
+    })
+  })
+})
+
 // File dialog for selecting files
 ipcMain.handle('select-file', async (_event, options: { filters?: Electron.FileFilter[] }) => {
   if (!mainWindow) return null

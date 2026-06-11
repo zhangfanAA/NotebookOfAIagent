@@ -30,7 +30,7 @@ class DocumentManager:
     def __init__(self):
         self._doc_repo = DocumentRepository()
 
-    def upload_document(self, file_path: str, original_filename: str = None, user_id: int = None, client_type: str = "web", skip_ocr: bool = False) -> dict:
+    def upload_document(self, file_path: str, original_filename: str = None, user_id: int = None) -> dict:
         """
         文档上传与入库
 
@@ -38,8 +38,6 @@ class DocumentManager:
             file_path: 文件本地路径
             original_filename: 用户上传时的原始文件名（中文等），为 None 时从 file_path 提取
             user_id: 用户 ID
-            client_type: 客户端类型 (web/app)
-            skip_ocr: 跳过 OCR（桌面端本地已完成 OCR）
 
         Returns:
             成功: {"status": "success", "chunks_count": int, "message": str}
@@ -72,10 +70,8 @@ class DocumentManager:
         try:
             # 解析 PDF
             if file_type == "pdf":
-                result = parse_pdf(file_path, client_type=client_type, skip_ocr=skip_ocr)
+                result = parse_pdf(file_path)
                 pages = result["pages"]
-                ocr_skipped = result.get("ocr_skipped", False)
-                ocr_skipped_pages = result.get("ocr_skipped_pages", 0)
             else:
                 return {"status": "error", "chunks_count": 0,
                         "message": f"暂不支持的文件类型: {file_type}"}
@@ -102,17 +98,11 @@ class DocumentManager:
             self._doc_repo.mark_ready(doc_id, count)
 
             logger.info("文档上传成功: %s → %d chunks", file_name, count)
-            response = {
+            return {
                 "status": "success",
                 "chunks_count": count,
                 "message": f"文档 '{file_name}' 入库成功，共 {count} 个知识片段",
             }
-            # 如果有扫描页被跳过，添加提示信息
-            if ocr_skipped:
-                response["ocr_skipped"] = True
-                response["ocr_skipped_pages"] = ocr_skipped_pages
-                response["message"] += f"（注意：{ocr_skipped_pages} 页扫描内容因 PaddleOCR 未启用而被跳过）"
-            return response
 
         except Exception as e:
             error_msg = str(e)

@@ -17,10 +17,6 @@ SUPERVISOR_PROMPT = """你是 SmartRead 智能学习助手的 Supervisor Agent�
 - `generate_flashcards`: 基于文档生成闪卡（问答对）。需要指定文件名。
 - `compare_documents`: 对比两个或多个文档的异同。需要至少 2 个文件名。
 
-### OCR 与 PDF
-- `ocr_image`: 对图片文件执行 OCR 文字识别。需要图片的本地路径。
-- `parse_pdf`: 解析 PDF 文件提取文本。需要 PDF 的本地路径。
-
 ## 工作原则
 
 1. **理解意图**: 仔细分析用户问题，判断需要调用哪些工具。

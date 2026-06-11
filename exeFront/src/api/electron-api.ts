@@ -283,6 +283,48 @@ export async function localPdfOcr(file: File, onProgress?: (progress: { stage: s
   }
 }
 
+// ===== 云端 OCR =====
+
+export async function cloudPdfOcr(
+  file: File,
+  token: string,
+  onProgress?: (progress: { stage: string; current: number; total: number; message: string }) => void
+): Promise<LocalPdfOcrResult> {
+  const electronAPI = (window as any).electronAPI;
+  if (!electronAPI?.cloudPdfOcr) {
+    throw new Error("云端 OCR 仅在桌面端可用");
+  }
+  const buffer = await file.arrayBuffer();
+  const tempPath = await electronAPI.saveTempFile(file.name, Array.from(new Uint8Array(buffer)));
+  if (!tempPath) {
+    throw new Error("无法创建临时文件");
+  }
+  let removeListener: (() => void) | undefined;
+  if (onProgress && electronAPI.onOcrProgress) {
+    removeListener = electronAPI.onOcrProgress(onProgress);
+  }
+  try {
+    return await electronAPI.cloudPdfOcr(tempPath, token);
+  } finally {
+    removeListener?.();
+    await electronAPI.deleteTempFile(tempPath).catch(() => {});
+  }
+}
+
+export function getCloudOcrToken(): string {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem("cloud_ocr_token") || "";
+}
+
+export function setCloudOcrToken(token: string): void {
+  if (typeof window === "undefined") return;
+  if (token) {
+    localStorage.setItem("cloud_ocr_token", token);
+  } else {
+    localStorage.removeItem("cloud_ocr_token");
+  }
+}
+
 // ===== Generate Content =====
 
 export async function generateMindmap(fileNames: string[], prompt = ""): Promise<GenerateResponse> {

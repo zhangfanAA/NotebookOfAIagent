@@ -24,14 +24,13 @@ huggingface-hub>=0.16.0
 PyMuPDF>=1.23.0
 unstructured>=0.12.0
 
-# OCR（扫描型 PDF 支持，CPU 版本，不要用 3.x — 会拉入 torch/PaddleX）
-paddlepaddle>=2.6.0
-paddleocr>=2.8.0,<3.0.0
-
 # 数据库
 PyMySQL>=1.1.0
 dbutils>=3.0.0
 cryptography>=41.0.0
+
+# HTTP 客户端
+httpx>=0.27.0
 
 # 配置与工具
 pyyaml>=6.0

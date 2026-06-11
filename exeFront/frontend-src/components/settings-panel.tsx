@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Save, Check, Server, Cloud, CreditCard, Eye, EyeOff, Wallet, Coins } from "lucide-react";
+import { Loader2, Save, Check, Server, Cloud, CreditCard, Eye, EyeOff, Wallet, Coins, ScanLine } from "lucide-react";
 import type { LlmSettings } from "@/lib/types";
 import * as api from "@/lib/api";
 
@@ -26,6 +26,12 @@ export function SettingsPanel() {
   const [balanceModel, setBalanceModel] = useState("");
   const [showBalanceKey, setShowBalanceKey] = useState(false);
   const [balance, setBalance] = useState<number | null>(null);
+  const [ocrMode, setOcrMode] = useState<"local" | "cloud" | "server">(() => {
+    if (typeof window === "undefined") return "local";
+    return (localStorage.getItem("ocr_mode") as "local" | "cloud" | "server") || "local";
+  });
+  const [cloudOcrToken, setCloudOcrToken] = useState(() => api.getCloudOcrToken());
+  const [showOcrToken, setShowOcrToken] = useState(false);
 
   useEffect(() => {
     api.getBalance().then((res) => setBalance(res.balance)).catch(() => {});
@@ -102,6 +108,79 @@ export function SettingsPanel() {
                 {balance !== null ? `¥ ${balance.toFixed(2)}` : "-"}
               </span>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* OCR 设置 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <ScanLine className="h-4 w-4" />
+              OCR 文字识别
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex gap-1">
+              <Button
+                variant={ocrMode === "local" ? "default" : "outline"}
+                size="sm"
+                className="flex-1 h-8 text-xs"
+                onClick={() => { setOcrMode("local"); localStorage.setItem("ocr_mode", "local"); }}
+              >
+                本地 OCR
+              </Button>
+              <Button
+                variant={ocrMode === "cloud" ? "default" : "outline"}
+                size="sm"
+                className="flex-1 h-8 text-xs"
+                onClick={() => { setOcrMode("cloud"); localStorage.setItem("ocr_mode", "cloud"); }}
+              >
+                云端 OCR
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs opacity-50 cursor-not-allowed"
+                disabled
+              >
+                服务器
+                <Badge variant="secondary" className="ml-0.5 text-[8px] px-0.5 py-0">待开发</Badge>
+              </Button>
+            </div>
+            {ocrMode === "cloud" && (
+              <div className="space-y-1">
+                <label className="text-xs font-medium">云端 OCR Token</label>
+                <div className="relative">
+                  <Input
+                    type={showOcrToken ? "text" : "password"}
+                    value={cloudOcrToken}
+                    onChange={(e) => { setCloudOcrToken(e.target.value); api.setCloudOcrToken(api.extractBearerToken(e.target.value)); }}
+                    placeholder="粘贴 Bearer Token 或 API Key"
+                    className="h-8 text-xs pr-8"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowOcrToken(!showOcrToken)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showOcrToken ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  用于扫描型 PDF 的文字识别，支持 PaddleOCR-VL 云端 API
+                </p>
+              </div>
+            )}
+            {ocrMode === "local" && (
+              <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+                使用本地 PaddleOCR 引擎识别扫描型 PDF，需要安装 PaddleOCR
+              </div>
+            )}
+            {ocrMode === "server" && (
+              <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+                服务器 OCR 功能开发中，敬请期待
+              </div>
+            )}
           </CardContent>
         </Card>
 

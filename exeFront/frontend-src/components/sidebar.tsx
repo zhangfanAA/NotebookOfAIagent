@@ -138,12 +138,15 @@ export function Sidebar({
 
   const handleUpload = async () => {
     if (!uploadFiles?.length) return;
+
+    const mode = (localStorage.getItem("ocr_mode") as string) || "local";
+    const token = api.getCloudOcrToken();
+
     setIsUploading(true);
     setUploadProgress({ current: 0, total: uploadFiles.length, message: "准备上传..." });
     const skippedFiles: string[] = [];
     let totalSkippedPages = 0;
     try {
-      // Electron 本地端：先检查 OCR 开关，再决定是否做本地 OCR
       let localOcrEnabled = false;
       if (api.isElectron()) {
         try {
@@ -157,8 +160,25 @@ export function Sidebar({
       for (let i = 0; i < uploadFiles.length; i++) {
         setUploadProgress({ current: i, total: uploadFiles.length, message: `正在处理 ${uploadFiles[i].name}...` });
         let localOcrDone = false;
-        // Electron 本地端：仅当 OCR 开关启用时才做本地 OCR
-        if (api.isElectron() && localOcrEnabled) {
+
+        if (api.isElectron() && mode === "cloud" && token) {
+          try {
+            const ocrResult = await api.cloudPdfOcr(uploadFiles[i], token, (progress) => {
+              setUploadProgress({
+                current: i,
+                total: uploadFiles.length,
+                message: `[${progress.stage === 'ocr' ? '云端OCR' : progress.stage === 'uploading' ? '上传' : progress.stage === 'done' ? '完成' : '处理'}] ${progress.message}`,
+              });
+            });
+            localOcrDone = true;
+            if (ocrResult.ocr_skipped) {
+              skippedFiles.push(uploadFiles[i].name);
+              totalSkippedPages += ocrResult.ocr_skipped_pages || 0;
+            }
+          } catch (ocrErr) {
+            console.warn("云端 OCR 失败，将使用服务端 OCR:", ocrErr);
+          }
+        } else if (api.isElectron() && mode === "local" && localOcrEnabled) {
           try {
             const ocrResult = await api.localPdfOcr(uploadFiles[i], (progress) => {
               setUploadProgress({
@@ -187,7 +207,6 @@ export function Sidebar({
       }
       setUploadFiles(null);
       await loadDocuments();
-      // 如果有扫描页被跳过，显示警告
       if (skippedFiles.length > 0) {
         setOcrWarning({ show: true, files: skippedFiles, pages: totalSkippedPages });
       }

@@ -398,11 +398,6 @@ async def upload_document(request: Request, file: UploadFile = File(...), user =
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="文件大小超过限制（最大 50MB）")
 
-    # 读取客户端类型（web/app），决定使用哪个 OCR 开关
-    client_type = request.headers.get("X-Client-Type", "web")
-    # 桌面端本地 OCR 已完成时，跳过服务端 OCR
-    local_ocr_done = request.headers.get("X-Local-OCR-Done", "false").lower() == "true"
-
     suffix = os.path.splitext(file.filename)[1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(content)
@@ -411,7 +406,7 @@ async def upload_document(request: Request, file: UploadFile = File(...), user =
     def _do_upload():
         try:
             rag = get_rag()
-            return rag.upload_document(tmp_path, original_filename=file.filename, user_id=user["user_id"], client_type=client_type, skip_ocr=local_ocr_done)
+            return rag.upload_document(tmp_path, original_filename=file.filename, user_id=user["user_id"])
         finally:
             os.unlink(tmp_path)
 
@@ -1139,13 +1134,14 @@ async def admin_set_registration(body: RegistrationSettingRequest, user = Depend
 
 @app.get("/api/admin/settings/paddle-ocr")
 async def admin_get_paddle_ocr(user = Depends(get_admin_user)):
-    """获取 PaddleOCR 开关状态（管理员，返回网页端和桌面端两个开关）"""
+    """获取 PaddleOCR 开关状态（管理员，返回网页端、桌面端、服务器三个开关）"""
     from src.database.global_config_repo import GlobalConfigRepository
     repo = GlobalConfigRepository()
     return {
         "enabled": repo.get_paddle_ocr_web_enabled(),
         "web_enabled": repo.get_paddle_ocr_web_enabled(),
         "app_enabled": repo.get_paddle_ocr_app_enabled(),
+        "server_enabled": False,
     }
 
 
@@ -1153,11 +1149,12 @@ class PaddleOcrSettingRequest(BaseModel):
     enabled: bool | None = None        # 向后兼容，映射到 web
     web_enabled: bool | None = None
     app_enabled: bool | None = None
+    server_enabled: bool | None = None  # 服务器 OCR（待开发）
 
 
 @app.put("/api/admin/settings/paddle-ocr")
 async def admin_set_paddle_ocr(body: PaddleOcrSettingRequest, user = Depends(get_admin_user)):
-    """设置 PaddleOCR 开关（管理员，可分别设置网页端和桌面端）"""
+    """设置 PaddleOCR 开关（管理员，可分别设置网页端、桌面端和服务器）"""
     from src.database.global_config_repo import GlobalConfigRepository
     repo = GlobalConfigRepository()
     if body.web_enabled is not None:
@@ -1166,11 +1163,15 @@ async def admin_set_paddle_ocr(body: PaddleOcrSettingRequest, user = Depends(get
         repo.set_paddle_ocr_web_enabled(body.enabled)
     if body.app_enabled is not None:
         repo.set_paddle_ocr_app_enabled(body.app_enabled)
+    # server_enabled 当前不生效，仅存储（待开发）
     return {
         "web_enabled": repo.get_paddle_ocr_web_enabled(),
         "app_enabled": repo.get_paddle_ocr_app_enabled(),
+        "server_enabled": False,
     }
 
+
+# ===== PaddleOCR 公开状态 =====
 
 @app.get("/api/settings/paddle-ocr")
 async def get_paddle_ocr_status(client_type: str = "web"):
@@ -1184,11 +1185,35 @@ async def get_paddle_ocr_status(client_type: str = "web"):
     return {"enabled": enabled}
 
 
-@app.get("/api/settings/paddle-ocr/gpu")
-async def get_paddle_ocr_gpu_status():
-    """获取 PaddleOCR GPU 状态（公开，无需认证）"""
-    from src.data.pdf_parser import get_device_info
-    return get_device_info()
+# ===== 云端 OCR 代理 =====
+
+OCR_SERVER_URL = os.environ.get("OCR_SERVER_URL", "http://localhost:8001")
+
+
+@app.post("/api/ocr/cloud")
+async def cloud_ocr_proxy(request: Request, file: UploadFile = File(...)):
+    """代理云端 OCR 调用（转发到独立 OCR 服务器）"""
+    authorization = request.headers.get("Authorization", "")
+    token = authorization.replace("Bearer ", "").replace("bearer ", "") if authorization else ""
+    if not token:
+        raise HTTPException(status_code=400, detail="需要提供 Authorization Bearer Token")
+
+    content = await file.read()
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(
+                f"{OCR_SERVER_URL}/ocr/pdf",
+                files={"file": (file.filename, content, file.content_type or "application/pdf")},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        return resp.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"云端 OCR 失败: {str(e)}")
 
 
 # ===== 公开接口 =====

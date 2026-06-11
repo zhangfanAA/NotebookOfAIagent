@@ -20,11 +20,20 @@
                      │              │ (stdio 子进程)    │ │
                      │              └──────────────────┘ │
                      └──────────────────────────────────┘
+
+┌──────────────────────────┐
+│  OCR 服务器（独立项目）    │
+│  OCRServer/  :8001       │
+│  后端通过 HTTP 代理调用    │
+└──────────────────────────┘
 ```
 
 MCP Server 作为子进程由 Supervisor Agent 按需启动，无需独立容器。
+OCR Server 为独立项目，Backend 通过 httpx 代理转发 `/api/ocr/cloud` 请求。
 
-## 快速部署（推荐）
+---
+
+## 方式一：Docker Compose 部署（推荐）
 
 ### 1. 准备服务器
 
@@ -61,8 +70,8 @@ vim .env
 ### 4. 运行部署脚本
 
 ```bash
-chmod +x deploy.sh
-./deploy.sh
+chmod +x Backend/deploy.sh
+./Backend/deploy.sh
 ```
 
 ### 5. 访问应用
@@ -78,23 +87,57 @@ chmod +x deploy.sh
 
 ---
 
-## 手动部署
+## 方式二：VPS 手动部署（exeFront 桌面端后端）
 
-如果不想使用部署脚本，可以手动执行：
+适用于 exeFront 桌面端场景，服务器只跑后端，OCR/PDF 解析在客户端本地完成。
 
 ```bash
-# 1. 配置环境变量
-cp .env.production .env
-vim .env
+# 1. 上传项目到服务器
+scp -r ./demo1 root@你的服务器IP:/opt/learning-assistant/
 
-# 2. 构建并启动服务
-docker-compose up -d
+# 2. SSH 登录服务器执行部署
+ssh root@你的服务器IP
+cd /opt/learning-assistant
+sudo bash Backend/deploy.sh
+```
 
-# 3. 查看服务状态
-docker-compose ps
+脚本会自动：
+- 安装 Python3 + MySQL
+- 创建数据库和用户
+- 创建 Python 虚拟环境并安装依赖
+- 生成 .env 配置（数据库密码、JWT 密钥自动生成）
+- 创建 systemd 服务，开机自启
 
-# 4. 查看日志
-docker-compose logs -f
+**架构：**
+```
+用户电脑                          VPS 服务器
+┌─────────────────┐              ┌──────────────────┐
+│ EXEFront 桌面端  │─── HTTP ───→│ FastAPI (8000)    │
+│ + 本地 PaddleOCR │              │ + MySQL           │
+│ + PyMuPDF       │              │ + 向量库 ChromaDB  │
+└─────────────────┘              └──────────────────┘
+```
+
+---
+
+## 方式三：本地开发
+
+```bash
+# 后端
+cd Backend
+pip install -r requirements.txt
+python main.py init-db    # 初始化数据库
+python main.py api        # 启动后端 (localhost:8000)
+
+# 前端
+cd Frontend
+npm install
+npm run dev               # 启动前端 (localhost:3000)
+
+# OCR 服务器（可选，云端 OCR 需要）
+cd OCRServer
+pip install -r requirements.txt
+python main.py            # 启动 OCR 服务 (localhost:8001)
 ```
 
 ---
@@ -106,28 +149,61 @@ docker-compose logs -f
 | mysql | 3306 | MySQL 数据库 |
 | api | 8000 | FastAPI 后端（含 Supervisor Agent + MCP Server） |
 | frontend | 3000 | Next.js 前端 |
+| ocr-server | 8001 | OCR 服务器（独立项目，可选） |
 
-## API 端点
+---
 
-| 端点 | 说明 |
-|------|------|
-| `POST /api/chat/stream` | 传统 RAG 流式聊天 |
-| `POST /api/agent/chat` | Supervisor Agent 非流式对话 |
-| `POST /api/agent/stream` | Supervisor Agent 流式对话（tool_call/token/done 事件） |
-| `GET /api/status` | 健康检查 |
+## 环境变量
 
-**Supervisor Agent 请求格式：**
-```json
-{"question": "帮我总结文档内容", "session_id": "可选"}
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `DB_HOST` | MySQL 主机 | localhost |
+| `DB_PORT` | MySQL 端口 | 3306 |
+| `DB_USER` | MySQL 用户 | root |
+| `DB_PASSWORD` | 数据库密码 | 1234 |
+| `DB_NAME` | 数据库名称 | project |
+| `DEEPSEEK_API_KEY` | DeepSeek API 密钥 | - |
+| `DEEPSEEK_BASE_URL` | DeepSeek API 地址 | https://api.deepseek.com/v1 |
+| `OLLAMA_BASE_URL` | Ollama 服务地址 | http://localhost:11434 |
+| `OLLAMA_MODEL` | Ollama 模型名称 | qwen2.5:7b-instruct |
+| `JWT_SECRET` | JWT 认证密钥 | - |
+| `APP_HOST` | 服务监听地址 | 0.0.0.0 |
+| `APP_PORT` | API 后端端口 | 8000 |
+| `FRONTEND_PORT` | Next.js 前端端口 | 3000 |
+| `OCR_SERVER_URL` | OCR 服务器地址 | http://localhost:8001 |
+
+---
+
+## Ollama 配置
+
+如果要在服务器上使用 Ollama：
+
+```bash
+# 安装 Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# 拉取模型
+ollama pull qwen2.5:7b-instruct
+
+# 启动 Ollama 服务
+ollama serve
 ```
 
-**Supervisor Agent 流式事件：**
-```json
-{"type": "tool_call", "tool": "rag_query", "args": {"question": "..."}}
-{"type": "tool_result", "tool": "rag_query", "content": "..."}
-{"type": "token", "content": "根据文档..."}
-{"type": "done"}
+然后在 `.env` 中设置：
 ```
+OLLAMA_BASE_URL=http://localhost:11434
+```
+
+---
+
+## 数据持久化
+
+以下数据会持久化保存：
+- **MySQL 数据**: Docker volume `mysql_data`
+- **上传的 PDF**: `./uploads/`
+- **向量数据库**: `./data/chroma_db/`
+- **日志文件**: `./logs/`
+- **配置文件**: `./Backend/config/`
 
 ---
 
@@ -155,56 +231,6 @@ docker-compose up -d --build
 # 进入容器
 docker exec -it la-api bash
 ```
-
----
-
-## 配置说明
-
-### 环境变量
-
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| DB_PASSWORD | 数据库密码 | 1234 |
-| DB_NAME | 数据库名称 | project |
-| DB_PORT | 数据库端口 | 3306 |
-| DEEPSEEK_API_KEY | DeepSeek API 密钥 | - |
-| DEEPSEEK_BASE_URL | DeepSeek API 地址 | https://api.deepseek.com/v1 |
-| OLLAMA_BASE_URL | Ollama 服务地址 | http://host.docker.internal:11434 |
-| OLLAMA_MODEL | Ollama 模型名称 | qwen2.5:7b-instruct |
-| APP_PORT | API 后端端口 | 8000 |
-| FRONTEND_PORT | Next.js 前端端口 | 3000 |
-| JWT_SECRET | JWT 认证密钥 | - |
-
-### Ollama 配置
-
-如果要在服务器上使用 Ollama：
-
-```bash
-# 安装 Ollama
-curl -fsSL https://ollama.com/install.sh | sh
-
-# 拉取模型
-ollama pull qwen2.5:7b-instruct
-
-# 启动 Ollama 服务
-ollama serve
-```
-
-然后在 `.env` 中设置：
-```
-OLLAMA_BASE_URL=http://localhost:11434
-```
-
----
-
-## 数据持久化
-
-以下数据会持久化保存：
-- **MySQL 数据**: Docker volume `mysql_data`
-- **上传的 PDF**: `./data/pdfs/`
-- **向量数据库**: `./data/chroma_db/`
-- **日志文件**: `./logs/`
-- **配置文件**: `./config/`
 
 ---
 
@@ -242,6 +268,17 @@ docker-compose logs mysql
 1. Ollama 服务已启动
 2. 防火墙允许 11434 端口
 3. `.env` 中 `OLLAMA_BASE_URL` 配置正确
+
+### 5. OCR 服务不可用
+
+OCR 服务为独立项目，云端 OCR 需要单独启动：
+```bash
+cd OCRServer
+pip install -r requirements.txt
+python main.py  # 端口 8001
+```
+
+Backend 通过 `OCR_SERVER_URL` 环境变量连接 OCR 服务。如果 OCR 服务未启动，云端 OCR 功能不可用，但不影响其他功能。
 
 ---
 

@@ -27,7 +27,7 @@ class QueryEngine:
         self._diagnosis = DiagnosisEngine()
         self._safe_system_prompt = build_safe_system_prompt()
 
-    def query(self, question: str, session_id: str, llm_client=None, user_id=None) -> dict:
+    def query(self, question: str, session_id: str, llm_client=None, user_id=None, memory_mode=False) -> dict:
         """
         核心查询接口（含安全校验 + 多轮上下文增强）
 
@@ -84,6 +84,26 @@ class QueryEngine:
                     history_context = "\n---\n".join(parts)
             except Exception as e:
                 logger.debug("历史记录检索跳过: %s", str(e))
+
+            # 记忆模式：检索当前会话的历史向量
+            if memory_mode:
+                try:
+                    memory_results = chat_history_store.search_history(
+                        query=question,
+                        top_k=3,
+                        session_id=session_id,
+                        user_id=user_id,
+                    )
+                    if memory_results:
+                        memory_parts = []
+                        for r in memory_results:
+                            memory_parts.append(f"Q: {r['question'][:200]}\nA: {r['answer'][:200]}")
+                        if not parts:
+                            parts = []
+                        parts.append(f"[记忆模式 - 相关历史问答]\n" + "\n---\n".join(memory_parts))
+                        history_context = "\n---\n".join(parts)
+                except Exception as e:
+                    logger.debug("记忆模式向量检索跳过: %s", str(e))
 
             # 构建初始状态
             max_loops = self._config["agent"]["max_loops"]
@@ -178,7 +198,7 @@ class QueryEngine:
             logger.error("查询失败: session=%s error=%s", session_id, str(e))
             return {"error": str(e), "code": "AGENT_ERROR"}
 
-    def query_stream(self, question: str, session_id: str, llm_client=None, user_id=None):
+    def query_stream(self, question: str, session_id: str, llm_client=None, user_id=None, memory_mode=False):
         """
         流式查询接口（生成器）
 
@@ -223,6 +243,26 @@ class QueryEngine:
                     history_context = "\n---\n".join(parts)
             except Exception as e:
                 logger.debug("历史记录检索跳过: %s", str(e))
+
+            # 记忆模式：检索当前会话的历史向量
+            if memory_mode:
+                try:
+                    memory_results = chat_history_store.search_history(
+                        query=question,
+                        top_k=3,
+                        session_id=session_id,
+                        user_id=user_id,
+                    )
+                    if memory_results:
+                        memory_parts = []
+                        for r in memory_results:
+                            memory_parts.append(f"Q: {r['question'][:200]}\nA: {r['answer'][:200]}")
+                        if not parts:
+                            parts = []
+                        parts.append(f"[记忆模式 - 相关历史问答]\n" + "\n---\n".join(memory_parts))
+                        history_context = "\n---\n".join(parts)
+                except Exception as e:
+                    logger.debug("记忆模式向量检索跳过: %s", str(e))
 
             # 执行 Agent 检索+评估
             max_loops = self._config["agent"]["max_loops"]

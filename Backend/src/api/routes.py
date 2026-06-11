@@ -157,6 +157,7 @@ class BroadcastRequest(BaseModel):
 class ChatRequest(BaseModel):
     question: str
     session_id: str
+    memory_mode: bool = False
 
 
 class AgentChatRequest(BaseModel):
@@ -375,7 +376,7 @@ async def chat(request: Request, body: ChatRequest, user = Depends(get_current_u
             raise HTTPException(status_code=402, detail="余额不足，请联系管理员充值")
 
     rag = get_rag()
-    result = rag.query(body.question, body.session_id, llm_client=user_llm, user_id=user["user_id"])
+    result = rag.query(body.question, body.session_id, llm_client=user_llm, user_id=user["user_id"], memory_mode=body.memory_mode)
     if "error" in result:
         raise HTTPException(status_code=500, detail=result["error"])
 
@@ -836,7 +837,7 @@ async def chat_stream(request: Request, body: ChatRequest, user = Depends(get_cu
 
     def event_generator():
         usage_info = None
-        for chunk in rag.query_stream(body.question, body.session_id, llm_client=user_llm, user_id=uid):
+        for chunk in rag.query_stream(body.question, body.session_id, llm_client=user_llm, user_id=uid, memory_mode=body.memory_mode):
             if chunk.get("type") == "result" and chunk.get("data", {}).get("usage"):
                 usage_info = chunk["data"]["usage"]
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"

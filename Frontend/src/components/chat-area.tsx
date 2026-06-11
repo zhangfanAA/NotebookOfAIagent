@@ -49,7 +49,7 @@ export function ChatArea({ sessionId, messages, setMessages, onMobileMenuOpen, p
   }, []);
 
   /** 核心发送函数 */
-  const handleSend = useCallback((question: string) => {
+  const handleSend = useCallback((question: string, memoryMode: boolean = false) => {
     if (!sessionId || !question.trim()) return;
     if (abortRef.current) return;
 
@@ -124,7 +124,8 @@ export function ChatArea({ sessionId, messages, setMessages, onMobileMenuOpen, p
         finalizeLastMessage(sm);
         abortRef.current = null;
         setIsStreaming(false);
-      }
+      },
+      memoryMode
     );
 
     abortRef.current = abort;

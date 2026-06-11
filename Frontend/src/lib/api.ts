@@ -152,7 +152,8 @@ export function chatStream(
   sessionId: string,
   onChunk: (chunk: ChatChunk) => void,
   onError: (err: Error) => void,
-  onDone: () => void
+  onDone: () => void,
+  memoryMode: boolean = false
 ): () => void {
   const controller = new AbortController();
 
@@ -164,7 +165,7 @@ export function chatStream(
       const res = await fetch(`${API_BASE}/api/chat/stream`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ question, session_id: sessionId }),
+        body: JSON.stringify({ question, session_id: sessionId, memory_mode: memoryMode }),
         signal: controller.signal,
       });
 

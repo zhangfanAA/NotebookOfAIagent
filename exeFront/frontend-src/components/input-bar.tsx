@@ -3,11 +3,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Send, Square, Map, FileQuestion, BookOpen } from "lucide-react";
+import { Send, Square, Map, FileQuestion, BookOpen, Brain } from "lucide-react";
 import * as api from "@/lib/api";
 
 interface InputBarProps {
-  onSend: (question: string) => void;
+  onSend: (question: string, memoryMode: boolean) => void;
   onStop: () => void;
   isStreaming: boolean;
   disabled: boolean;
@@ -15,6 +15,10 @@ interface InputBarProps {
 
 export function InputBar({ onSend, onStop, isStreaming, disabled }: InputBarProps) {
   const [input, setInput] = useState("");
+  const [memoryMode, setMemoryMode] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("memory_mode") === "true";
+  });
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-resize textarea
@@ -28,9 +32,9 @@ export function InputBar({ onSend, onStop, isStreaming, disabled }: InputBarProp
 
   const handleSubmit = useCallback(() => {
     if (!input.trim() || isStreaming || disabled) return;
-    onSend(input.trim());
+    onSend(input.trim(), memoryMode);
     setInput("");
-  }, [input, isStreaming, disabled, onSend]);
+  }, [input, isStreaming, disabled, onSend, memoryMode]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -42,9 +46,15 @@ export function InputBar({ onSend, onStop, isStreaming, disabled }: InputBarProp
   const handleQuickAction = (prefix: string) => {
     const text = input.trim();
     if (text) {
-      onSend(`${prefix}: ${text}`);
+      onSend(`${prefix}: ${text}`, memoryMode);
       setInput("");
     }
+  };
+
+  const toggleMemoryMode = () => {
+    const next = !memoryMode;
+    setMemoryMode(next);
+    localStorage.setItem("memory_mode", String(next));
   };
 
   return (
@@ -52,6 +62,16 @@ export function InputBar({ onSend, onStop, isStreaming, disabled }: InputBarProp
       <div className="mx-auto max-w-3xl">
         {/* Quick action buttons */}
         <div className="mb-2 flex gap-1.5">
+          <Button
+            variant={memoryMode ? "default" : "outline"}
+            size="sm"
+            className="h-7 gap-1 text-xs"
+            disabled={disabled || isStreaming}
+            onClick={toggleMemoryMode}
+          >
+            <Brain className="h-3 w-3" />
+            {memoryMode ? "记忆中" : "记忆模式"}
+          </Button>
           <Button
             variant="outline"
             size="sm"

@@ -13,12 +13,14 @@ SmartRead 是一款基于 RAG（检索增强生成）的 AI 智能学习助手�
 | 层级 | 技术栈 | 说明 |
 |------|--------|------|
 | **前端** | Next.js 15 + React 19 + TypeScript | App Router，Tailwind CSS + shadcn/ui 组件库 |
+| **桌面端** | Electron + Vite + React | exeFront，独立打包 |
 | **后端** | Python FastAPI | REST API，异步支持，SSE 流式输出 |
+| **OCR 服务** | Python FastAPI（独立项目） | OCRServer，PaddleOCR 云端/本地识别 |
 | **数据库** | MySQL 8.0 | PyMySQL + DBUtils 连接池 |
 | **向量数据库** | ChromaDB | 本地持久化存储 |
-| **嵌入模型** | BGE-M3 (ONNX Runtime) | 文本向量化，CPU 推理 |
-| **LLM** | Ollama (本地) / DeepSeek (云端) | 双模型架构，支持用户级 API Key |
-| **OCR** | PaddleOCR (CPU) | 扫描型 PDF 文字识别 |
+| **嵌入模型** | BGE-small-zh-v1.5 (ONNX Runtime) | 文本向量化，CPU 推理 |
+| **LLM** | Ollama (本地) / DeepSeek (云端) / 余额模型 | 三模式架构，支持用户级 API Key |
+| **OCR** | PaddleOCR (CPU) + PaddleOCR-VL (云端) | 扫描型 PDF 文字识别 |
 | **PDF 解析** | PyMuPDF | 文本提取 + OCR 兜底 |
 | **认证** | JWT (PyJWT) + bcrypt | Token 认证，密码哈希 |
 | **Agent 框架** | LangGraph + LangChain | 状态机驱动的 RAG 工作流 |
@@ -32,7 +34,7 @@ SmartRead 是一款基于 RAG（检索增强生成）的 AI 智能学习助手�
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                          前端 (Next.js)                              │
+│                    前端 (Next.js / Electron)                         │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ │
 │  │ 登录页面  │ │ 对话界面  │ │ 管理面板  │ │ 设置面板  │ │ Agent 面板│ │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘ │
@@ -65,6 +67,15 @@ SmartRead 是一款基于 RAG（检索增强生成）的 AI 智能学习助手�
     ┌────┴────┐                       ┌─────┴─────┐
     │  MySQL  │                       │  ChromaDB │
     └─────────┘                       └───────────┘
+
+┌──────────────────────────┐
+│  OCR 服务器 (独立项目)     │
+│  OCRServer/              │
+│  ┌────────┐ ┌──────────┐│
+│  │云端 OCR │ │本地 OCR  ││
+│  └────────┘ └──────────┘│
+│  端口: 8001              │
+└──────────────────────────┘
 ```
 
 ---
@@ -73,112 +84,93 @@ SmartRead 是一款基于 RAG（检索增强生成）的 AI 智能学习助手�
 
 ```
 demo1/
-├── main.py                    # 统一启动入口（api / init-db / check）
-├── requirements.txt           # Python 依赖
-├── Dockerfile                 # 后端容器镜像
-├── docker-compose.yaml        # 三容器编排（MySQL + API + Frontend）
-├── deploy.sh                  # 服务器部署脚本
-├── .env / .env.example        # 环境变量配置
-├── config/
-│   └── settings.yaml          # 应用配置（LLM、数据库、向量库等）
-├── src/
-│   ├── api/
-│   │   ├── auth.py            # JWT 认证、密码校验
-│   │   └── routes.py          # 全部 API 路由定义（含 Supervisor Agent 端点）
-│   ├── config.py              # 全局配置管理（YAML + 环境变量）
-│   ├── logger.py              # 日志模块
-│   ├── data/
-│   │   ├── pdf_parser.py      # PDF 解析（PyMuPDF + PaddleOCR）
-│   │   ├── chunker.py         # 文本切片
-│   │   ├── vector_store.py    # ChromaDB 向量存储（ONNX Runtime 嵌入）
-│   │   └── _ocr_script.py     # OCR 独立脚本
-│   ├── database/
-│   │   ├── db_manager.py      # MySQL 连接池、建表 DDL、迁移
-│   │   ├── user_repo.py       # 用户数据仓库
-│   │   ├── session_repo.py    # 会话数据仓库
-│   │   ├── document_repo.py   # 文档数据仓库
-│   │   ├── message_repo.py    # 站内信数据仓库
-│   │   ├── mindmap_repo.py    # 思维导图数据仓库
-│   │   ├── quiz_repo.py       # 测验数据仓库
-│   │   ├── flashcard_repo.py  # 闪卡数据仓库
-│   │   ├── bookmark_repo.py   # 书签数据仓库
-│   │   ├── reading_repo.py    # 阅读进度数据仓库
-│   │   ├── settings_repo.py   # 设置数据仓库
-│   │   ├── tag_repo.py        # 标签数据仓库
-│   │   ├── global_config_repo.py # 全局配置数据仓库
-│   │   └── download_repo.py   # 文件下载数据仓库
-│   ├── rag/
-│   │   ├── state.py           # LangGraph 状态定义（AgentState）
-│   │   ├── graph.py           # LangGraph 状态机组装
-│   │   ├── retrieve.py        # 检索节点
-│   │   ├── grade.py           # 相关性评估节点
-│   │   ├── generate.py        # 答案生成节点
-│   │   ├── rewrite.py         # 查询重写节点
-│   │   ├── rag_service.py     # RAG 服务（核心业务逻辑）
-│   │   ├── llm_client.py      # LLM 客户端（Ollama / DeepSeek / 余额模型）
-│   │   ├── query_engine.py    # 查询引擎
-│   │   ├── document_manager.py # 文档管理
-│   │   ├── document_processor.py # 文档处理流水线
-│   │   ├── session_manager.py # 会话管理
-│   │   ├── chat_history_store.py # 聊天历史向量存储
-│   │   ├── mindmap_generator.py  # 思维导图生成
-│   │   ├── quiz_generator.py     # 测验生成
-│   │   ├── flashcard_generator.py # 闪卡生成
-│   │   ├── compare_generator.py  # 文档对比生成
-│   │   ├── grade.py           # 评分逻辑
-│   │   ├── rewrite.py         # 重写逻辑
-│   │   └── diagnosis.py       # 知识诊断
-│   ├── mcp_servers/           # MCP Server 层（Phase 1 新增）
-│   │   ├── __init__.py        # 包标记
-│   │   ├── _common.py         # 共享工具（单例、LLM、异步包装、JSON 序列化）
-│   │   ├── rag_server.py      # MCP: RAG 问答 + 文档管理（4 工具）
-│   │   ├── learning_tools_server.py # MCP: 思维导图/测验/闪卡/对比（5 工具）
-│   │   └── ocr_server.py      # MCP: OCR + PDF 解析（2 工具）
-│   ├── supervisor/            # Supervisor Agent 层（Phase 2 新增）
-│   │   ├── __init__.py        # 包标记
-│   │   ├── prompts.py         # Supervisor 系统提示词
-│   │   └── graph.py           # SupervisorGraph（LangGraph ReAct Agent）
-│   ├── utils/
-│   │   ├── helpers.py         # 通用工具函数
-│   │   ├── security.py        # 安全工具
-│   │   ├── preferences.py     # 用户偏好
-│   │   ├── startup_check.py   # 启动检查
-│   │   └── export.py          # 会话导出（MD/HTML）
-│   └── frontend/              # [已删除] 旧版 Streamlit 前端
-├── frontend/                  # Next.js 前端
+├── README.md                   # 本文档
+├── .env                        # 环境变量配置
+├── .gitignore
+│
+├── Backend/                    # 后端（FastAPI）
+│   ├── main.py                 # 统一启动入口（api / init-db / check）
+│   ├── requirements.txt        # Python 依赖
+│   ├── Dockerfile              # 后端容器镜像
+│   ├── deploy.sh               # 服务器部署脚本
+│   ├── config/
+│   │   └── settings.yaml       # 应用配置（LLM、数据库、向量库等）
 │   ├── src/
-│   │   ├── app/
-│   │   │   ├── page.tsx       # 主页面（对话界面）
-│   │   │   ├── login/page.tsx # 登录/注册页面
-│   │   │   └── layout.tsx     # 全局布局
-│   │   ├── components/
-│   │   │   ├── chat-area.tsx      # 对话区域
-│   │   │   ├── message-bubble.tsx # 消息气泡
-│   │   │   ├── input-bar.tsx      # 输入栏
-│   │   │   ├── sidebar.tsx        # 侧边栏（会话列表）
-│   │   │   ├── admin-panel.tsx    # 管理员面板
-│   │   │   ├── mindmap-panel.tsx  # 思维导图面板
-│   │   │   ├── quiz-panel.tsx     # 测验面板
-│   │   │   ├── flashcard-panel.tsx # 闪卡面板
-│   │   │   ├── compare-panel.tsx  # 文档对比面板
-│   │   │   ├── stats-panel.tsx    # 统计面板
-│   │   │   ├── settings-panel.tsx # 设置面板
-│   │   │   ├── message-panel.tsx  # 站内信面板
-│   │   │   ├── download-panel.tsx # 文件下载面板
-│   │   │   └── ui/                # shadcn/ui 基础组件
+│   │   ├── api/
+│   │   │   ├── auth.py         # JWT 认证、密码校验
+│   │   │   └── routes.py       # 全部 API 路由定义
+│   │   ├── config.py           # 全局配置管理（YAML + 环境变量）
+│   │   ├── logger.py           # 日志模块
+│   │   ├── data/
+│   │   │   ├── pdf_parser.py   # PDF 解析（PyMuPDF + OCR 兜底）
+│   │   │   ├── chunker.py      # 文本切片
+│   │   │   └── vector_store.py # ChromaDB 向量存储（ONNX Runtime 嵌入）
+│   │   ├── database/
+│   │   │   ├── db_manager.py   # MySQL 连接池、建表 DDL、迁移
+│   │   │   ├── user_repo.py    # 用户数据仓库
+│   │   │   ├── session_repo.py # 会话数据仓库
+│   │   │   └── ...             # 其他 repo
+│   │   ├── rag/
+│   │   │   ├── rag_service.py  # RAG 服务门面
+│   │   │   ├── query_engine.py # 查询引擎（含记忆模式）
+│   │   │   ├── llm_client.py   # LLM 客户端（Ollama / DeepSeek / 余额）
+│   │   │   ├── chat_history_store.py # 聊天历史向量存储
+│   │   │   ├── session_manager.py # 会话管理
+│   │   │   ├── document_manager.py # 文档管理
+│   │   │   ├── document_processor.py # 文档处理流水线
+│   │   │   ├── state.py        # LangGraph 状态定义
+│   │   │   ├── graph.py        # LangGraph 状态机组装
+│   │   │   ├── retrieve.py     # 检索节点
+│   │   │   ├── grade.py        # 相关性评估节点
+│   │   │   ├── generate.py     # 答案生成节点
+│   │   │   ├── rewrite.py      # 查询重写节点
+│   │   │   └── diagnosis.py    # 知识诊断
+│   │   ├── mcp_servers/        # MCP Server 层
+│   │   │   ├── rag_server.py   # MCP: RAG 问答 + 文档管理
+│   │   │   ├── learning_tools_server.py # MCP: 学习工具
+│   │   │   └── ocr_server.py   # MCP: OCR + PDF 解析
+│   │   ├── supervisor/         # Supervisor Agent 层
+│   │   │   ├── prompts.py      # Supervisor 系统提示词
+│   │   │   └── graph.py        # SupervisorGraph（LangGraph ReAct Agent）
+│   │   └── utils/
+│   │       ├── security.py     # 安全工具
+│   │       ├── startup_check.py # 启动检查
+│   │       └── export.py       # 会话导出（MD/HTML）
+│   └── models/                 # 本地嵌入模型文件
+│
+├── Frontend/                   # Web 前端（Next.js）
+│   ├── src/
+│   │   ├── app/                # App Router 页面
+│   │   ├── components/         # React 组件
+│   │   │   ├── chat-area.tsx   # 对话区域
+│   │   │   ├── input-bar.tsx   # 输入栏（含记忆模式按钮）
+│   │   │   ├── sidebar.tsx     # 侧边栏
+│   │   │   ├── settings-panel.tsx # 设置面板（含 OCR 设置）
+│   │   │   └── ...
 │   │   └── lib/
-│   │       ├── api.ts         # API 请求封装
-│   │       ├── auth.ts        # 认证工具
-│   │       ├── types.ts       # TypeScript 类型定义
-│   │       └── utils.ts       # 工具函数
-│   ├── Dockerfile             # 前端容器镜像
+│   │       ├── api.ts          # API 请求封装
+│   │       ├── auth.ts         # 认证工具
+│   │       └── types.ts        # TypeScript 类型
+│   ├── Dockerfile
 │   └── package.json
-├── models/                    # 本地模型文件
-├── data/                      # 数据目录（上传文件、向量库）
-├── logs/                      # 日志目录
-├── uploads/                   # 上传文件目录
-├── tests/                     # 测试文件
-└── docs/                      # 文档目录
+│
+├── exeFront/                   # 桌面端前端（Electron + Vite）
+│   ├── frontend-src/           # 前端源码（结构同 Frontend/src）
+│   ├── electron/               # Electron 主进程
+│   └── package.json
+│
+├── OCRServer/                  # OCR 服务器（独立项目）
+│   ├── main.py                 # FastAPI 应用入口（端口 8001）
+│   ├── cloud_client.py         # 云端 OCR API 调用（PaddleOCR-VL）
+│   ├── local_engine.py         # 本地 OCR 引擎
+│   ├── ocr_worker.py           # OCR 子进程脚本
+│   ├── requirements.txt
+│   └── README.md
+│
+├── docs/                       # 补充文档
+├── data/                       # 数据目录（向量库等）
+├── logs/                       # 日志目录
+└── uploads/                    # 上传文件目录
 ```
 
 ---
@@ -187,7 +179,7 @@ demo1/
 
 ### 5.1 RAG 智能问答（LangGraph 状态机）
 
-核心工作流，区别于简单的一问一答 RAG，采用 LangGraph 图结构实现循环自省机制：
+核心工作流，采用 LangGraph 图结构实现循环自省机制：
 
 ```
 START → 检索(Retrieve) → 评估(Grade)
@@ -206,8 +198,27 @@ START → 检索(Retrieve) → 评估(Grade)
 - 支持 SSE 流式输出（`/api/chat/stream`）
 - 溯源引用：答案附带来源文档、页码、置信度
 - 知识诊断：连续提问同一知识点超过 3 次触发主动学习建议
+- **记忆模式**：激活后检索当前会话的聊天向量，将相关历史问答 + 最近两轮对话注入 LLM 上下文
 
-### 5.2 用户认证与权限系统
+### 5.2 记忆模式（Memory Mode）
+
+聊天界面提供"记忆模式"切换按钮。激活后：
+
+1. **向量检索**：按 `session_id` 检索当前会话的聊天历史向量（ChromaDB `chat_{user_id}` 集合），返回 Top-3 相关问答
+2. **上下文注入**：将 RAG 检索结果 + 最近两轮对话拼接为上下文，注入 LLM 查询
+3. **关闭行为**：未激活时走正常聊天流程，无额外上下文
+
+**数据流：**
+```
+前端 InputBar → onSend(question, memoryMode)
+  → chatStream(question, sessionId, memoryMode)
+    → POST /api/chat/stream  {question, session_id, memory_mode: true}
+      → QueryEngine.query_stream(memory_mode=True)
+        → chat_history_store.search_history(session_id=当前会话)
+        → 注入 [记忆模式 - 相关历史问答] + [当前会话最近对话]
+```
+
+### 5.3 用户认证与权限系统
 
 - **JWT Token 认证**：登录返回 Token，前端存 localStorage，每次请求携带
 - **bcrypt 密码哈希**：安全存储用户密码
@@ -216,73 +227,91 @@ START → 检索(Retrieve) → 评估(Grade)
 - **注册开关**：管理员可控制是否开放注册
 - **用户隔离**：会话、文档、思维导图、测验等数据按 user_id 隔离
 
-### 5.3 文档管理
+### 5.4 文档管理
 
 - **上传**：支持 PDF 文件上传，最大 100MB
-- **解析**：PyMuPDF 提取文本，扫描型 PDF 自动调用 PaddleOCR
+- **解析**：PyMuPDF 提取文本，扫描型 PDF 自动调用 OCR（本地 PaddleOCR 或云端 PaddleOCR-VL）
 - **切片**：按 500 字符切片，50 字符重叠，附带元数据（文件名、页码）
-- **向量化**：BGE-M3 嵌入模型（ONNX Runtime），存入 ChromaDB
+- **向量化**：BGE-small-zh-v1.5 嵌入模型（ONNX Runtime），存入 ChromaDB
 - **全文回填**：启动时自动为旧文档回填全文内容
 - **删除**：文档所有者或管理员可删除
 
-### 5.4 思维导图 / 重点笔记
+### 5.5 OCR 服务（独立项目）
+
+OCR 服务已从 Backend 分离为独立项目 `OCRServer/`，通过 HTTP API 通信：
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `POST /ocr/pdf` | PDF OCR | 上传 PDF，返回识别文字 |
+| `POST /ocr/image` | 图片 OCR | 上传图片，返回识别文字 |
+| `GET /health` | 健康检查 | 服务状态 |
+
+**Backend 代理**：`/api/ocr/cloud` 端点通过 httpx 转发请求到 OCRServer（默认 `http://localhost:8001`），可通过 `OCR_SERVER_URL` 环境变量配置。
+
+**启动方式**：
+```bash
+cd OCRServer
+pip install -r requirements.txt
+python main.py  # 端口 8001
+```
+
+### 5.6 思维导图 / 重点笔记
 
 - 基于上传文档内容，LLM 自动生成思维导图（Mermaid 格式）或重点笔记
 - 支持保存、列表查看、详情查看、删除
-- 生成内容与源文件关联
 
-### 5.5 测验系统
+### 5.7 测验系统
 
 - 支持选择题、填空题、简答题三种题型
 - 可配置题目数量和难度（easy / medium / hard）
 - LLM 自动判分
 - 支持保存测验记录和成绩
 
-### 5.6 闪卡学习
+### 5.8 闪卡学习
 
 - 基于文档内容自动生成闪卡（正面/背面）
 - 支持自定义主题聚焦
 - 支持保存、列表、详情、删除
 
-### 5.7 文档对比
+### 5.9 文档对比
 
 - 选择 2 个以上文档进行对比分析
 - LLM 生成结构化对比结果
 - 可指定对比焦点
 
-### 5.8 阅读辅助
+### 5.10 阅读辅助
 
 - **阅读进度**：记录每个文档的阅读进度（当前页/总页数）
 - **书签**：在文档特定页面添加书签和笔记
 - **会话笔记**：每个会话可记录学习笔记
 
-### 5.9 标签系统
+### 5.11 标签系统
 
 - 创建自定义标签（名称 + 颜色）
 - 给消息打标签分类
 - 支持标签的增删查
 
-### 5.10 收藏系统
+### 5.12 收藏系统
 
 - 收藏重要对话内容
 - 关联原始问题
 - 按会话查看收藏列表
 
-### 5.11 会话导出
+### 5.13 会话导出
 
 - 支持导出为 Markdown 或 HTML 格式
 - 包含完整的对话记录、引用来源、置信度
 
-### 5.12 LLM 配置管理
+### 5.14 LLM 配置管理
 
 - **三模式切换**：
   - **本地模式 (local)**：使用 Ollama 本地模型
-  - **云端模式 (cloud)**：使用 DeepSeek 等云端 API
+  - **云端模式 (cloud)**：使用 DeepSeek 等云端 API（OpenAI 兼容格式）
   - **余额模式 (balance)**：管理员配置的共享云端模型，按 Token 计费
 - **用户级 API Key**：每个用户可配置自己的云端 API Key
 - **余额系统**：管理员可调整用户余额，使用余额模型自动扣费
 
-### 5.13 站内信系统
+### 5.15 站内信系统
 
 - 用户间消息发送
 - 管理员可群发消息
@@ -290,17 +319,17 @@ START → 检索(Retrieve) → 评估(Grade)
 - 收件箱/已发送/未读计数
 - 发送频率限制（5 秒/条）
 
-### 5.14 管理员功能
+### 5.16 管理员功能
 
 - 用户列表查看
 - 用户余额调整
 - 使用记录查看（Token 用量、费用）
 - 封号/解封用户
 - 注册开关控制
-- PaddleOCR 开关控制
+- PaddleOCR 开关控制（网页端/桌面端/服务器分别控制）
 - 全局 LLM 配置管理
 
-### 5.15 MCP Server（Model Context Protocol）
+### 5.17 MCP Server（Model Context Protocol）
 
 将系统核心能力封装为 MCP Server，供外部 AI 应用通过标准 MCP 协议调用。
 
@@ -314,20 +343,7 @@ START → 检索(Retrieve) → 评估(Grade)
 | Learning Server | `mcp_servers/learning_tools_server.py` | `generate_mindmap`, `generate_quiz`, `check_quiz_answer`, `generate_flashcards`, `compare_documents` | 学习工具生成 |
 | OCR Server | `mcp_servers/ocr_server.py` | `ocr_image`, `parse_pdf` | OCR 识别 + PDF 解析 |
 
-**共享模块** `_common.py`：
-- `get_rag_service()` — RAGService 单例
-- `get_user_llm(user_id)` — 用户级 LLMClient
-- `run_blocking()` — asyncio.to_thread 包装
-- `to_json_string()` — JSON 序列化
-
-**独立启动**：
-```bash
-python -m src.mcp_servers.rag_server
-python -m src.mcp_servers.learning_tools_server
-python -m src.mcp_servers.ocr_server
-```
-
-### 5.16 Supervisor Agent（多 Agent 调度）
+### 5.18 Supervisor Agent（多 Agent 调度）
 
 基于 LangGraph 构建的 ReAct Agent，作为"父 Agent"调度 MCP 工具完成复杂学习任务。
 
@@ -340,24 +356,11 @@ python -m src.mcp_servers.ocr_server
   → SSE 流式返回（tool_call / tool_result / token / done 事件）
 ```
 
-**核心组件**（`src/supervisor/graph.py`）：
-- `_build_llm(user_id)` — 根据 DB 配置构建 ChatOpenAI（local/cloud/balance），支持用户级 API Key
-- `_build_mcp_config()` — MCP Server 子进程配置
-- `_wrap_tools()` — 工具包装器，自动注入 user_id/session_id（LLM 不可见，安全性保障）
-- `SupervisorGraph` — 异步上下文管理器，`ainvoke()` 非流式 / `astream()` 流式
-
-**图结构**（ReAct Agent）：
-```
-START → agent_node → (有 tool_calls?) → tool_node → agent_node（循环）
-                    → (无 tool_calls?) → END
-```
-
 **特性**：
 - LLM 自主决策调用哪些工具，支持单轮多工具编排
 - user_id 自动注入，防止越权访问
 - session_id 按需注入，支持 RAG 查询的对话上下文
 - 流式事件包含工具调用过程，前端可展示 Agent 思考链
-- 与现有 REST API 完全共存，互不影响
 
 ---
 
@@ -365,26 +368,26 @@ START → agent_node → (有 tool_calls?) → tool_node → agent_node（循环
 
 ### 6.1 数据表一览
 
-| 表名                    | 说明      | 关键字段                                                                                                           |
-|-----------------------|---------|----------------------------------------------------------------------------------------------------------------|
-| `users`               | 用户表     | id, username, password_hash, role, banned, balance, cloud_api_key, cloud_base_url, cloud_model, last_online_at |
-| `sessions`            | 会话表     | session_id, user_id, title, notes, is_active                                                                   |
-| `messages`            | 消息表     | id, session_id, role, content, sources(JSON), reasoning, confidence, loop_count                                |
-| `documents`           | 文档表     | id, user_id, file_name, file_path, file_type, file_size, chunks_count, status, full_text                       |
-| `knowledge_diagnosis` | 知识诊断表   | id, session_id, topic, question_count, suggestion                                                              |
-| `favorites`           | 收藏表     | id, session_id, message_id, content, question                                                                  |
-| `reading_progress`    | 阅读进度表   | id, user_id, file_name, current_page, total_pages, is_finished                                                 |
-| `bookmarks`           | 书签表     | id, user_id, file_name, page_number, title, note                                                               |
-| `tags`                | 标签表     | id, name, color                                                                                                |
-| `message_tags`        | 消息标签关联表 | message_id, tag_id                                                                                             |
-| `saved_mindmaps`      | 思维导图表   | id, user_id, title, output_type, content, mermaid_code, file_names(JSON)                                       |
-| `saved_quizzes`       | 测验表     | id, user_id, title, questions(JSON), score_correct, score_total, difficulty, file_names(JSON)                  |
-| `saved_flashcards`    | 闪卡表     | id, user_id, title, cards(JSON), file_names(JSON)                                                              |
-| `settings`            | 设置表     | key, value                                                                                                     |
-| `usage_logs`          | 使用记录表   | id, user_id, model, prompt_tokens, completion_tokens, cache_hit/miss_tokens, cost                              |
-| `global_config`       | 全局配置表   | num(1=云端/2=余额/3=注册开关), llm_provider, api_key, base_url, model                                                  |
-| `user_messages`       | 站内信表    | id, from_user_id, to_user_id, content, is_read                                                                 |
-| `download_files`      | 文件下载表   | id, file_name, file_path, file_size, uploaded_by                                                               |
+| 表名 | 说明 | 关键字段 |
+|------|------|----------|
+| `users` | 用户表 | id, username, password_hash, role, banned, balance, cloud_api_key, cloud_base_url, cloud_model, last_online_at |
+| `sessions` | 会话表 | session_id, user_id, title, notes, is_active |
+| `messages` | 消息表 | id, session_id, role, content, sources(JSON), reasoning, confidence, loop_count |
+| `documents` | 文档表 | id, user_id, file_name, file_path, file_type, file_size, chunks_count, status, full_text |
+| `knowledge_diagnosis` | 知识诊断表 | id, session_id, topic, question_count, suggestion |
+| `favorites` | 收藏表 | id, session_id, message_id, content, question |
+| `reading_progress` | 阅读进度表 | id, user_id, file_name, current_page, total_pages, is_finished |
+| `bookmarks` | 书签表 | id, user_id, file_name, page_number, title, note |
+| `tags` | 标签表 | id, name, color |
+| `message_tags` | 消息标签关联表 | message_id, tag_id |
+| `saved_mindmaps` | 思维导图表 | id, user_id, title, output_type, content, mermaid_code, file_names(JSON) |
+| `saved_quizzes` | 测验表 | id, user_id, title, questions(JSON), score_correct, score_total, difficulty, file_names(JSON) |
+| `saved_flashcards` | 闪卡表 | id, user_id, title, cards(JSON), file_names(JSON) |
+| `settings` | 设置表 | key, value |
+| `usage_logs` | 使用记录表 | id, user_id, model, prompt_tokens, completion_tokens, cache_hit/miss_tokens, cost |
+| `global_config` | 全局配置表 | num(1=云端/2=余额/3=注册开关), llm_provider, api_key, base_url, model |
+| `user_messages` | 站内信表 | id, from_user_id, to_user_id, content, is_read |
+| `download_files` | 文件下载表 | id, file_name, file_path, file_size, uploaded_by |
 
 ### 6.2 数据库迁移
 
@@ -407,19 +410,30 @@ START → agent_node → (有 tool_calls?) → tool_node → agent_node（循环
 
 ### 7.2 对话接口
 
-| 方法   | 路径                 | 说明       | 认证 |
-|------|--------------------|----------|----|
-| POST | `/api/chat`        | 发送消息     | 是  |
-| POST | `/api/chat/stream` | SSE 流<br/>式聊天 | 是  |
+| 方法 | 路径 | 说明 | 认证 |
+|------|------|------|------|
+| POST | `/api/chat` | 发送消息 | 是 |
+| POST | `/api/chat/stream` | SSE 流式聊天 | 是 |
 
-### 7.2b Supervisor Agent 接口
+**请求体**：
+```json
+{
+  "question": "用户问题",
+  "session_id": "会话ID",
+  "memory_mode": false
+}
+```
 
-| 方法   | 路径                  | 说明                        | 认证 |
-|------|---------------------|---------------------------|----|
-| POST | `/api/agent/chat`   | Supervisor Agent 非流式对话    | 是  |
-| POST | `/api/agent/stream` | Supervisor Agent SSE 流式对话 | 是  |
+`memory_mode`：是否启用记忆模式（默认 `false`）。启用后检索当前会话聊天向量并注入上下文。
 
-**请求体**：`{"question": "...", "session_id": "..."}`（session_id 可选，用于 RAG 查询上下文）
+### 7.3 Supervisor Agent 接口
+
+| 方法 | 路径 | 说明 | 认证 |
+|------|------|------|------|
+| POST | `/api/agent/chat` | Supervisor Agent 非流式对话 | 是 |
+| POST | `/api/agent/stream` | Supervisor Agent SSE 流式对话 | 是 |
+
+**请求体**：`{"question": "...", "session_id": "..."}`（session_id 可选）
 
 **流式事件格式**：
 ```json
@@ -427,10 +441,9 @@ START → agent_node → (有 tool_calls?) → tool_node → agent_node（循环
 {"type": "tool_result", "tool": "rag_query", "content": "..."}
 {"type": "token", "content": "根据文档..."}
 {"type": "done"}
-data: [DONE]
 ```
 
-### 7.3 会话接口
+### 7.4 会话接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
@@ -451,7 +464,7 @@ data: [DONE]
 | GET | `/api/sessions/{sid}/progress` | 学习进度 | 是 |
 | GET | `/api/sessions/search` | 搜索会话 | 是 |
 
-### 7.4 文档接口
+### 7.5 文档接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
@@ -459,7 +472,7 @@ data: [DONE]
 | GET | `/api/documents` | 文档列表 | 是 |
 | DELETE | `/api/documents/{doc_id}` | 删除文档 | 是 |
 
-### 7.5 思维导图接口
+### 7.6 思维导图接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
@@ -469,7 +482,7 @@ data: [DONE]
 | GET | `/api/mindmaps/{id}` | 思维导图详情 | 是 |
 | DELETE | `/api/mindmaps/{id}` | 删除思维导图 | 是 |
 
-### 7.6 测验接口
+### 7.7 测验接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
@@ -480,7 +493,7 @@ data: [DONE]
 | GET | `/api/quizzes/{id}` | 测验详情 | 是 |
 | DELETE | `/api/quizzes/{id}` | 删除测验 | 是 |
 
-### 7.7 闪卡接口
+### 7.8 闪卡接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
@@ -490,13 +503,13 @@ data: [DONE]
 | GET | `/api/flashcards/saved/{id}` | 闪卡详情 | 是 |
 | DELETE | `/api/flashcards/saved/{id}` | 删除闪卡 | 是 |
 
-### 7.8 文档对比接口
+### 7.9 文档对比接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
 | POST | `/api/compare` | 文档对比 | 是 |
 
-### 7.9 阅读辅助接口
+### 7.10 阅读辅助接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
@@ -506,7 +519,7 @@ data: [DONE]
 | GET | `/api/bookmarks` | 书签列表 | 是 |
 | DELETE | `/api/bookmarks/{id}` | 删除书签 | 是 |
 
-### 7.10 标签接口
+### 7.11 标签接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
@@ -516,7 +529,7 @@ data: [DONE]
 | POST | `/api/messages/tags` | 给消息打标签 | 是 |
 | DELETE | `/api/messages/tags` | 移除消息标签 | 是 |
 
-### 7.11 站内信接口
+### 7.12 站内信接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
@@ -525,8 +538,10 @@ data: [DONE]
 | GET | `/api/messages/inbox` | 收件箱 | 是 |
 | GET | `/api/messages/sent` | 已发送 | 是 |
 | GET | `/api/messages/unread-count` | 未读数 | 是 |
+| PUT | `/api/messages/{msg_id}/read` | 标记已读 | 是 |
+| PUT | `/api/messages/read-all` | 全部标记已读 | 是 |
 
-### 7.12 设置接口
+### 7.13 设置接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
@@ -534,16 +549,15 @@ data: [DONE]
 | PUT | `/api/settings/llm` | 更新 LLM 配置 | 是 |
 | GET | `/api/settings/registration` | 注册开关状态 | 否 |
 | GET | `/api/settings/paddle-ocr` | PaddleOCR 开关状态 | 否 |
-| GET | `/api/settings/paddle-ocr/gpu` | PaddleOCR GPU 状态 | 否 |
 
-### 7.13 用户接口
+### 7.14 用户接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
 | GET | `/api/user/balance` | 查看余额 | 是 |
 | GET | `/api/user/usage-logs` | 使用记录 | 是 |
 
-### 7.14 管理员接口
+### 7.15 管理员接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
@@ -556,7 +570,22 @@ data: [DONE]
 | GET | `/api/admin/settings/paddle-ocr` | PaddleOCR 开关 | 管理员 |
 | PUT | `/api/admin/settings/paddle-ocr` | 设置 PaddleOCR 开关 | 管理员 |
 
-### 7.15 系统接口
+### 7.16 OCR 代理接口
+
+| 方法 | 路径 | 说明 | 认证 |
+|------|------|------|------|
+| POST | `/api/ocr/cloud` | 云端 OCR 代理（转发到 OCRServer） | 是（Bearer Token） |
+
+### 7.17 下载文件接口
+
+| 方法 | 路径 | 说明 | 认证 |
+|------|------|------|------|
+| GET | `/api/downloads` | 可下载文件列表 | 是 |
+| POST | `/api/downloads` | 上传文件（管理员） | 管理员 |
+| DELETE | `/api/downloads/{file_id}` | 删除文件（管理员） | 管理员 |
+| GET | `/api/downloads/{file_id}/file` | 下载文件 | 是 |
+
+### 7.18 系统接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
@@ -574,7 +603,7 @@ data: [DONE]
 4. **文件大小限制**：上传文件最大 100MB
 5. **用户隔离**：所有数据按 user_id 隔离，普通用户无法访问他人数据
 6. **权限校验**：管理员接口通过 `get_admin_user` 中间件保护
-7. **CORS 配置**：仅允许指定来源访问
+7. **CORS 配置**：允许所有来源（Bearer Token 认证，非 Cookie）
 8. **参数化查询**：所有 SQL 使用参数化查询防止注入
 9. **全局异常处理**：捕获未处理异常，返回友好错误信息
 10. **MCP 工具注入**：Supervisor Agent 通过 `_wrap_tools()` 自动注入 user_id，LLM 无法越权访问其他用户数据
@@ -606,14 +635,20 @@ docker-compose down
 
 ```bash
 # 后端
+cd Backend
 pip install -r requirements.txt
 python main.py init-db    # 初始化数据库
 python main.py api        # 启动后端 (localhost:8000)
 
 # 前端
-cd frontend
+cd Frontend
 npm install
 npm run dev               # 启动前端 (localhost:3000)
+
+# OCR 服务器（可选）
+cd OCRServer
+pip install -r requirements.txt
+python main.py            # 启动 OCR 服务 (localhost:8001)
 ```
 
 ### 9.3 环境变量
@@ -633,12 +668,13 @@ npm run dev               # 启动前端 (localhost:3000)
 | `APP_HOST` | 服务监听地址 | 0.0.0.0 |
 | `APP_PORT` | 服务端口 | 8000 |
 | `FRONTEND_PORT` | 前端端口 | 3000 |
+| `OCR_SERVER_URL` | OCR 服务器地址 | http://localhost:8001 |
 
 ---
 
 ## 十、依赖清单
 
-### 10.1 后端依赖 (requirements.txt)
+### 10.1 后端依赖 (Backend/requirements.txt)
 
 - **Web 框架**：FastAPI, Uvicorn
 - **AI/RAG**：LangChain, LangGraph, Ollama, OpenAI
@@ -646,11 +682,17 @@ npm run dev               # 启动前端 (localhost:3000)
 - **向量数据库**：ChromaDB
 - **嵌入**：ONNX Runtime, Tokenizers, HuggingFace Hub
 - **数据处理**：PyMuPDF, Unstructured
-- **OCR**：PaddlePaddle, PaddleOCR
 - **数据库**：PyMySQL, DBUtils, Cryptography
+- **HTTP 客户端**：httpx（OCR 代理）
 - **配置工具**：PyYAML, python-dotenv, Pydantic, bcrypt, PyJWT
 
-### 10.2 前端依赖 (package.json)
+### 10.2 OCR 服务器依赖 (OCRServer/requirements.txt)
+
+- **Web 框架**：FastAPI, Uvicorn
+- **OCR**：PaddlePaddle, PaddleOCR
+- **HTTP 客户端**：httpx, requests
+
+### 10.3 前端依赖 (Frontend/package.json)
 
 - **框架**：Next.js 15, React 19
 - **UI**：Tailwind CSS, shadcn/ui, Radix UI, Lucide Icons
@@ -667,3 +709,4 @@ npm run dev               # 启动前端 (localhost:3000)
 | V3 | 2024-06 | 用户隔离、注册开关、封号、站内消息系统 |
 | V3.1 | 2024-06 | 前后端分离（Next.js 替换 Streamlit）、PaddleOCR 开关、性能优化 |
 | V4 | 2024-06 | MCP Server 封装（11 工具）+ Supervisor Agent（多 Agent 调度）+ 新增 /api/agent 端点 |
+| V5 | 2024-06 | OCR 服务器独立为 OCRServer/ + 记忆模式（Memory Mode）+ 设置面板 OCR 配置 |

@@ -87,7 +87,8 @@ def store_qa(session_id: str, question: str, answer: str, sources: list = None, 
     logger.debug("聊天记录已存储: user=%d session=%s question='%s'", user_id, session_id, question[:50])
 
 
-def search_history(query: str, top_k: int = 5, exclude_session: str = None, user_id: int = None) -> list:
+def search_history(query: str, top_k: int = 5, exclude_session: str = None,
+                   session_id: str = None, user_id: int = None) -> list:
     """
     语义检索当前用户的历史聊天记录
 
@@ -95,6 +96,7 @@ def search_history(query: str, top_k: int = 5, exclude_session: str = None, user
         query: 查询文本
         top_k: 返回数量
         exclude_session: 排除的会话 ID（避免重复检索当前会话）
+        session_id: 仅检索指定会话 ID（记忆模式，与 exclude_session 互斥）
         user_id: 用户 ID（必须传入，否则返回空）
 
     Returns:
@@ -112,6 +114,8 @@ def search_history(query: str, top_k: int = 5, exclude_session: str = None, user
     where_filter = None
     if exclude_session:
         where_filter = {"session_id": {"$ne": exclude_session}}
+    elif session_id:
+        where_filter = {"session_id": session_id}
 
     query_embedding = embed_query(query)
     query_params = {

@@ -73,13 +73,13 @@ class RAGService:
 
     # ===== 查询相关 =====
 
-    def query(self, question: str, session_id: str, llm_client=None, user_id=None) -> dict:
+    def query(self, question: str, session_id: str, llm_client=None, user_id=None, memory_mode=False) -> dict:
         """核心查询接口"""
-        return self._query_engine.query(question, session_id, llm_client=llm_client, user_id=user_id)
+        return self._query_engine.query(question, session_id, llm_client=llm_client, user_id=user_id, memory_mode=memory_mode)
 
-    def query_stream(self, question: str, session_id: str, llm_client=None, user_id=None):
+    def query_stream(self, question: str, session_id: str, llm_client=None, user_id=None, memory_mode=False):
         """流式查询接口"""
-        yield from self._query_engine.query_stream(question, session_id, llm_client=llm_client, user_id=user_id)
+        yield from self._query_engine.query_stream(question, session_id, llm_client=llm_client, user_id=user_id, memory_mode=memory_mode)
 
     def reload_llm_client(self):
         """重新加载 LLM 客户端（设置变更后调用）"""

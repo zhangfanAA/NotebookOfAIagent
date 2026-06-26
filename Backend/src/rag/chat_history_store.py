@@ -203,12 +203,24 @@ def clear_legacy_collection() -> int:
         return 0
 
 
-def get_stats(user_id: int = None) -> dict:
+def get_stats(user_id: int = None, session_id: str = None) -> dict:
     """获取聊天记录统计"""
     if user_id is None:
         return {"total_records": 0, "collection_name": "N/A"}
     collection = _get_collection(user_id)
+    total = collection.count()
+    session_count = 0
+    if session_id:
+        try:
+            results = collection.get(
+                where={"session_id": session_id},
+                include=[],
+            )
+            session_count = len(results["ids"]) if results and results["ids"] else 0
+        except Exception:
+            session_count = 0
     return {
-        "total_records": collection.count(),
+        "total_records": total,
+        "session_records": session_count,
         "collection_name": _collection_name(user_id),
     }

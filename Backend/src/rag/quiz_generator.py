@@ -93,7 +93,12 @@ class QuizGenerator:
         correct_answer = question.get("answer", "")
 
         if qtype == "choice":
-            is_correct = user_answer.strip().upper() == correct_answer.strip().upper()
+            # 提取选项字母（兼容 "B" 和 "B. 选项内容" 两种格式）
+            def extract_letter(s: str) -> str:
+                s = s.strip()
+                m = re.match(r'^([A-Da-d])', s)
+                return m.group(1).upper() if m else s.upper()
+            is_correct = extract_letter(user_answer) == extract_letter(correct_answer)
         elif qtype == "fill":
             # 填空题：忽略空白差异
             is_correct = user_answer.strip() == correct_answer.strip()

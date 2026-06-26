@@ -18,7 +18,7 @@ from src.logger import get_logger
 logger = get_logger("rag.grade")
 
 # 检索分数阈值：高于此分数直接判定相关（跳过 LLM 评估）
-SCORE_THRESHOLD = 0.35
+SCORE_THRESHOLD = 0.50
 
 # 评估 Prompt
 GRADE_PROMPT = """你是一个文档相关性评估专家。
@@ -71,7 +71,7 @@ def grade_node(state: AgentState) -> dict:
         logger.info("[评估节点] 无检索文档，直接判定 no")
         return {"relevance": "no"}
 
-    # 检�分数兜底：如果最高分 >= 阈值，直接判 yes
+    # 检索分数兜底：如果最高分 >= 阈值，直接判 yes
     max_score = max(d.get("score", 0) for d in documents)
     if max_score >= SCORE_THRESHOLD:
         logger.info("[评估节点] 检索分数 %.4f >= %.2f，直接判定 yes", max_score, SCORE_THRESHOLD)
@@ -94,7 +94,7 @@ def grade_node(state: AgentState) -> dict:
     except Exception as e:
         logger.error("[评估节点] LLM 调用失败: %s", str(e))
         # LLM 失败时，根据分数兜底
-        if max_score >= 0.25:
+        if max_score >= 0.35:
             logger.info("[评估节点] LLM 失败但分数 %.4f 尚可，判定 yes", max_score)
             return {"relevance": "yes"}
         return {"relevance": "no"}

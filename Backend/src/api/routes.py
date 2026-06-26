@@ -22,6 +22,16 @@ logger = get_logger("api.routes")
 
 app = FastAPI(title="智能学习助手 API", version="0.2.0")
 
+# 挂载 MCP SSE 子应用（保留 MCP 架构，使用 HTTP 传输避免 stdio 问题）
+try:
+    from src.mcp_servers.rag_server import mcp as rag_mcp
+    from src.mcp_servers.learning_tools_server import mcp as learning_mcp
+    app.mount("/mcp/rag", rag_mcp.sse_app(), name="mcp_rag")
+    app.mount("/mcp/learning", learning_mcp.sse_app(), name="mcp_learning")
+    logger.info("MCP SSE 子应用已挂载: /mcp/rag, /mcp/learning")
+except Exception as e:
+    logger.warning("MCP SSE 子应用挂载失败: %s", e)
+
 
 # 全局异常处理
 @app.exception_handler(Exception)
@@ -163,6 +173,7 @@ class ChatRequest(BaseModel):
 class AgentChatRequest(BaseModel):
     question: str
     session_id: str = ""
+    memory_mode: bool = False
 
 
 class SessionCreateRequest(BaseModel):
@@ -397,7 +408,7 @@ async def upload_document(request: Request, file: UploadFile = File(...), user =
     # 检查文件大小
     content = await file.read()
     if len(content) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail="文件大小超过限制（最大 50MB）")
+        raise HTTPException(status_code=413, detail="文件大小超过限制（最大 100MB）")
 
     suffix = os.path.splitext(file.filename)[1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -516,6 +527,46 @@ async def system_diagnostics(user = Depends(get_current_user)):
     rag = get_rag()
     stats = rag.get_vector_db_stats()
     return {"startup_checks": checks, "vector_db_stats": stats}
+
+
+@app.get("/api/memory/stats")
+async def memory_stats(session_id: str = Query(""), user = Depends(get_current_user)):
+    """获取当前用户的记忆向量统计"""
+    from src.rag import chat_history_store
+    uid = user["user_id"]
+    stats = chat_history_store.get_stats(user_id=uid, session_id=session_id)
+    return stats
+
+
+@app.get("/api/memory/recent")
+async def memory_recent(session_id: str = Query(""), user = Depends(get_current_user)):
+    """获取指定会话的最近记忆向量"""
+    from src.rag import chat_history_store
+    uid = user["user_id"]
+    if not session_id:
+        return {"records": [], "total": 0}
+    # 获取该会话的所有向量记录
+    collection = chat_history_store._get_collection(uid)
+    if collection.count() == 0:
+        return {"records": [], "total": 0}
+    try:
+        results = collection.get(
+            where={"session_id": session_id} if session_id else None,
+            include=["metadatas", "documents"],
+            limit=20,
+        )
+        records = []
+        if results and results["metadatas"]:
+            for meta in results["metadatas"]:
+                records.append({
+                    "question": meta.get("question", ""),
+                    "answer": meta.get("answer", "")[:200],
+                    "timestamp": meta.get("timestamp", 0),
+                    "sources": meta.get("sources", ""),
+                })
+        return {"records": records, "total": len(records)}
+    except Exception as e:
+        return {"records": [], "total": 0, "error": str(e)}
 
 
 @app.post("/api/generate")
@@ -916,7 +967,7 @@ async def remove_favorite(fid: int, user = Depends(get_current_user)):
 # ===== 导出 =====
 
 @app.get("/api/sessions/{sid}/export")
-async def export_session(sid: str, format: str = Query("md", regex="^(md|html)$"), user = Depends(get_current_user)):
+async def export_session(sid: str, format: str = Query("md", pattern="^(md|html)$"), user = Depends(get_current_user)):
     """导出会话记录"""
     rag = get_rag()
     messages = rag.get_session_history(sid)
@@ -1217,6 +1268,298 @@ async def cloud_ocr_proxy(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"云端 OCR 失败: {str(e)}")
 
 
+# ===== 余额 OCR 代理（直连 PaddleOCR-VL API，按页扣费）=====
+
+PADDLEOCR_JOB_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+PADDLEOCR_MODEL = "PaddleOCR-VL-1.6"
+
+
+# OCR 任务状态存储（内存，重启丢失）
+_ocr_jobs: dict[str, dict] = {}
+
+
+@app.post("/api/ocr/balance")
+async def balance_ocr_submit(request: Request, file: UploadFile = File(...), user = Depends(get_current_user)):
+    """余额 OCR：提交任务，立即返回 job_id（后台轮询结果）"""
+    uid = user["user_id"]
+
+    # 检查余额
+    from src.database.user_repo import UserRepository
+    user_repo = UserRepository()
+    u = user_repo.get_user(uid)
+    if u and float(u["balance"]) <= 0:
+        raise HTTPException(status_code=402, detail="余额不足，请联系管理员充值")
+
+    # 获取管理员配置的 OCR API Key
+    from src.database.global_config_repo import GlobalConfigRepository
+    ocr_cfg = GlobalConfigRepository().get_balance_ocr_config()
+    ocr_api_key = ocr_cfg.get("api_key", "")
+    if not ocr_api_key:
+        raise HTTPException(status_code=400, detail="管理员未配置余额 OCR API Key，请联系管理员")
+
+    content = await file.read()
+
+    import httpx
+    headers = {"Authorization": f"bearer {ocr_api_key}"}
+    optional_payload = {
+        "useDocOrientationClassify": False,
+        "useDocUnwarping": False,
+        "useChartRecognition": False,
+    }
+
+    # 提交 OCR 任务
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            data = {
+                "model": PADDLEOCR_MODEL,
+                "optionalPayload": json.dumps(optional_payload),
+            }
+            resp = await client.post(
+                PADDLEOCR_JOB_URL,
+                headers=headers,
+                data=data,
+                files={"file": (file.filename, content, file.content_type or "application/pdf")},
+            )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=f"OCR API 错误: {resp.text[:200]}")
+
+        api_job_id = resp.json()["data"]["jobId"]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OCR 提交失败: {str(e)}")
+
+    # 创建内部 job_id，启动后台轮询
+    import uuid
+    internal_job_id = str(uuid.uuid4())[:8]
+    _ocr_jobs[internal_job_id] = {"status": "processing", "user_id": uid, "api_job_id": api_job_id}
+
+    logger.info("OCR 任务已提交: api_job=%s internal_job=%s user=%d", api_job_id, internal_job_id, uid)
+
+    # 启动后台任务轮询 OCR 结果
+    import asyncio
+    asyncio.create_task(_poll_ocr_result(internal_job_id, api_job_id, uid, ocr_api_key))
+
+    return {"status": "submitted", "job_id": internal_job_id}
+
+
+@app.get("/api/ocr/balance/{job_id}")
+async def balance_ocr_status(job_id: str, user = Depends(get_current_user)):
+    """查询 OCR 任务状态，完成后返回结果"""
+    job = _ocr_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if job.get("user_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="无权访问此任务")
+
+    if job["status"] == "done":
+        return {
+            "status": "done",
+            "pages": job.get("pages", []),
+            "total_pages": job.get("total_pages", 0),
+            "cost": job.get("cost", 0),
+        }
+    elif job["status"] == "failed":
+        return {"status": "failed", "error": job.get("error", "未知错误")}
+    else:
+        return {"status": "processing"}
+
+
+async def _poll_ocr_result(internal_job_id: str, api_job_id: str, uid: int, ocr_api_key: str):
+    """后台轮询 OCR 任务结果，完成后扣费"""
+    import httpx
+    import asyncio
+
+    headers = {"Authorization": f"bearer {ocr_api_key}"}
+    result_url = None
+
+    try:
+        for _ in range(120):  # 最多等 10 分钟
+            await asyncio.sleep(5)
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    job_resp = await client.get(f"{PADDLEOCR_JOB_URL}/{api_job_id}", headers=headers)
+            except Exception:
+                continue
+
+            if job_resp.status_code != 200:
+                continue
+
+            job_data = job_resp.json().get("data", {})
+            state = job_data.get("state", "")
+
+            if state == "done":
+                result_url = job_data.get("resultUrl", {}).get("jsonUrl", "")
+                break
+            elif state == "failed":
+                error_msg = job_data.get("errorMsg", "未知错误")
+                _ocr_jobs[internal_job_id] = {"status": "failed", "user_id": uid, "error": f"OCR 任务失败: {error_msg}"}
+                logger.error("OCR 任务失败: job=%s error=%s", internal_job_id, error_msg)
+                return
+
+        if not result_url:
+            _ocr_jobs[internal_job_id] = {"status": "failed", "user_id": uid, "error": "OCR 任务超时"}
+            logger.error("OCR 任务超时: job=%s", internal_job_id)
+            return
+
+        # 下载结果
+        async with httpx.AsyncClient(timeout=60) as client:
+            jsonl_resp = await client.get(result_url)
+        jsonl_resp.raise_for_status()
+
+        # 解析结果
+        pages_text = []
+        for line in jsonl_resp.text.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            result = json.loads(line).get("result", {})
+            for page in result.get("layoutParsingResults", []):
+                md_text = page.get("markdown", {}).get("text", "")
+                pages_text.append(md_text)
+
+        total_pages = len(pages_text) if pages_text else 1
+
+        # 扣费
+        from src.database.user_repo import UserRepository
+        user_repo = UserRepository()
+        cost = total_pages * 0.005
+        user_repo.update_balance(uid, -cost)
+        user_repo.add_usage_log(uid, "balance-ocr", 0, 0, 0, 0, cost)
+        logger.info("余额 OCR 完成: job=%s user=%d pages=%d cost=%.4f", internal_job_id, uid, total_pages, cost)
+
+        _ocr_jobs[internal_job_id] = {
+            "status": "done",
+            "user_id": uid,
+            "pages": pages_text,
+            "total_pages": total_pages,
+            "cost": cost,
+        }
+
+    except Exception as e:
+        _ocr_jobs[internal_job_id] = {"status": "failed", "user_id": uid, "error": str(e)}
+        logger.error("OCR 后台处理异常: job=%s error=%s", internal_job_id, str(e))
+
+
+# ===== 管理员余额配置接口 =====
+
+class BalanceOcrRequest(BaseModel):
+    api_key: str = ""
+
+
+@app.get("/api/admin/settings/balance-ocr")
+async def get_balance_ocr(user = Depends(get_admin_user)):
+    """管理员获取余额 OCR 配置"""
+    from src.database.global_config_repo import GlobalConfigRepository
+    cfg = GlobalConfigRepository().get_balance_ocr_config()
+    masked_key = "****" + cfg["api_key"][-4:] if cfg.get("api_key") and len(cfg["api_key"]) > 4 else ""
+    return {"api_key": masked_key}
+
+
+@app.put("/api/admin/settings/balance-ocr")
+async def update_balance_ocr(body: BalanceOcrRequest, user = Depends(get_admin_user)):
+    """管理员更新余额 OCR 配置"""
+    from src.database.global_config_repo import GlobalConfigRepository
+    GlobalConfigRepository().update_balance_ocr_config(
+        api_key=body.api_key if body.api_key else None,
+    )
+    return {"status": "ok"}
+
+
+@app.get("/api/admin/settings/balance-model")
+async def get_balance_model(user = Depends(get_admin_user)):
+    """管理员获取余额模型配置"""
+    from src.database.global_config_repo import GlobalConfigRepository
+    cfg = GlobalConfigRepository().get(2)
+    masked_key = "****" + cfg["api_key"][-4:] if cfg.get("api_key") and len(cfg["api_key"]) > 4 else ""
+    return {"api_key": masked_key, "base_url": cfg.get("base_url", ""), "model": cfg.get("model", "")}
+
+
+class BalanceModelRequest(BaseModel):
+    balance_api_key: str = ""
+    balance_base_url: str = ""
+    balance_model: str = ""
+
+
+@app.put("/api/admin/settings/balance-model")
+async def update_balance_model(body: BalanceModelRequest, user = Depends(get_admin_user)):
+    """管理员更新余额模型配置"""
+    from src.database.global_config_repo import GlobalConfigRepository
+    repo = GlobalConfigRepository()
+    if body.balance_api_key:
+        repo.update(2, api_key=body.balance_api_key)
+    if body.balance_base_url:
+        repo.update(2, base_url=body.balance_base_url)
+    if body.balance_model:
+        repo.update(2, model=body.balance_model)
+    return {"status": "ok"}
+
+
+# ===== 连接测试端点 =====
+
+@app.post("/api/test/ocr-connection")
+async def test_ocr_connection(user = Depends(get_current_user)):
+    """测试余额 OCR API 连接（PaddleOCR-VL）"""
+    from src.database.global_config_repo import GlobalConfigRepository
+    cfg = GlobalConfigRepository().get_balance_ocr_config()
+    api_key = cfg.get("api_key", "")
+    if not api_key:
+        return {"ok": False, "message": "未配置余额 OCR API Key"}
+    try:
+        import httpx
+        # 测试 PaddleOCR-VL API 可达性
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
+                headers={"Authorization": f"bearer {api_key}"},
+            )
+        if resp.status_code in (200, 405):
+            return {"ok": True, "message": "PaddleOCR-VL API 连接成功"}
+        return {"ok": False, "message": f"HTTP {resp.status_code}: {resp.text[:100]}"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)[:100]}
+
+
+@app.post("/api/test/balance-model")
+async def test_balance_model(user = Depends(get_current_user)):
+    """测试余额模型 API 连接"""
+    from src.database.global_config_repo import GlobalConfigRepository
+    cfg = GlobalConfigRepository().get(2)
+    api_key = cfg.get("api_key", "")
+    base_url = cfg.get("base_url", "")
+    model = cfg.get("model", "")
+    if not api_key or not base_url:
+        return {"ok": False, "message": "未配置余额模型 API"}
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{base_url}/models", headers={"Authorization": f"Bearer {api_key}"})
+        if resp.status_code == 200:
+            return {"ok": True, "message": f"连接成功，模型: {model}"}
+        return {"ok": False, "message": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)[:100]}
+
+
+@app.post("/api/test/cloud-connection")
+async def test_cloud_connection(body: LlmSettingsRequest, user = Depends(get_current_user)):
+    """测试用户云端 API 连接"""
+    api_key = body.cloud_api_key or ""
+    base_url = (body.cloud_base_url or "").rstrip("/")
+    model = body.cloud_model or "deepseek-chat"
+    if not api_key or not base_url:
+        return {"ok": False, "message": "请填写 API Key 和 Base URL"}
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{base_url}/models", headers={"Authorization": f"Bearer {api_key}"})
+        if resp.status_code == 200:
+            return {"ok": True, "message": f"连接成功，模型: {model}"}
+        return {"ok": False, "message": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)[:100]}
+
+
 # ===== 公开接口 =====
 
 @app.get("/api/settings/registration")
@@ -1482,10 +1825,103 @@ async def agent_stream(request: Request, body: AgentChatRequest, user = Depends(
 
     async def event_generator():
         from src.supervisor.graph import SupervisorGraph
+        from src.database.session_repo import MessageRepository
+
+        msg_repo = MessageRepository()
+
+        # 记忆模式：检索历史记忆并注入上下文
+        memory_context = ""
+        if body.memory_mode:
+            try:
+                from src.rag import chat_history_store
+                memory_results = chat_history_store.search_history(
+                    query=body.question,
+                    top_k=3,
+                    session_id=body.session_id,
+                    user_id=uid,
+                )
+                if memory_results:
+                    memory_parts = []
+                    for r in memory_results:
+                        memory_parts.append(f"Q: {r['question'][:200]}\nA: {r['answer'][:200]}")
+                    memory_context = "\n---\n".join(memory_parts)
+                    yield f"data: {json.dumps({'type': 'tool_call', 'tool': 'memory_search', 'args': {'query': body.question[:100]}, 'id': 'memory_001'}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'tool_result', 'tool': 'memory_search', 'content': f'检索到 {len(memory_results)} 条相关记忆', 'id': 'memory_001'}, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                logger.debug("Agent 记忆检索跳过: %s", str(e))
+
+        # 构建带记忆上下文的问题
+        agent_question = body.question
+        if memory_context:
+            agent_question = f"[相关历史记忆]\n{memory_context}\n\n[当前问题]\n{body.question}"
+
+        # 收集最终回答和来源
+        full_answer = ""
+        collected_sources = []
+        collected_confidence = 0.0
+        rag_query_called = False
 
         async with SupervisorGraph(user_id=uid, session_id=body.session_id or None) as supervisor:
-            async for event in supervisor.astream(body.question):
+            async for event in supervisor.astream(agent_question):
+                logger.info("Agent 事件: %s", json.dumps(event, ensure_ascii=False)[:200])
+                # 收集 token 用于保存
+                if event.get("type") == "token":
+                    full_answer += event.get("content", "")
+                # 从 rag_query 工具结果中提取 sources 和 confidence
+                if event.get("type") == "tool_result" and event.get("tool") == "rag_query":
+                    rag_query_called = True
+                    try:
+                        content = event.get("content", "{}")
+                        logger.info("rag_query 内容类型: %s, 长度: %d", type(content).__name__, len(str(content)))
+                        # 尝试直接解析 JSON
+                        rag_result = json.loads(content)
+                        if "sources" in rag_result:
+                            collected_sources = rag_result["sources"]
+                        if "confidence" in rag_result:
+                            collected_confidence = rag_result["confidence"]
+                        logger.info("从 rag_query 提取到 %d 个来源, confidence=%.2f", len(collected_sources), collected_confidence)
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning("解析 rag_query 结果失败: %s, 内容前100字: %s", str(e), str(content)[:100])
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        # 发送结果事件（包含 sources 和 confidence）
+        logger.info("Agent 最终: sources=%d, confidence=%.2f", len(collected_sources), collected_confidence)
+        if collected_sources or collected_confidence > 0:
+            result_event = {
+                "type": "result",
+                "data": {
+                    "sources": collected_sources,
+                    "confidence": collected_confidence,
+                },
+            }
+            yield f"data: {json.dumps(result_event, ensure_ascii=False)}\n\n"
+            logger.info("Agent result 事件已发送")
+
+        # 保存助手消息（rag_query 已通过 rag.query() 保存，不重复）
+        if full_answer and not rag_query_called:
+            try:
+                msg_repo.add_message(body.session_id, "assistant", full_answer, sources=collected_sources, confidence=collected_confidence)
+                from src.rag import chat_history_store
+                chat_history_store.store_qa(body.session_id, body.question, full_answer, collected_sources, user_id=uid)
+            except Exception as e:
+                logger.debug("Agent 消息保存跳过: %s", str(e))
+
+        # 自动生成会话标题（第一条消息时，用 LLM 生成）
+        try:
+            from src.database.session_repo import SessionRepository
+            from src.rag.query_engine import _generate_title
+            session_repo = SessionRepository()
+            session = session_repo.get_session(body.session_id)
+            if session and session.get("title") in ("新会话", "New Session", None, ""):
+                from src.rag.llm_client import LLMClient
+                llm = LLMClient.for_user(uid)
+                title = _generate_title(llm, body.question)
+                if title:
+                    session_repo.update_title(body.session_id, title)
+                    logger.info("Agent 会话标题已更新: %s -> %s", body.session_id, title)
+                    yield f"data: {json.dumps({'type': 'title', 'data': title}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.debug("Agent 更新会话标题失败: %s", str(e))
 
         yield "data: [DONE]\n\n"
 

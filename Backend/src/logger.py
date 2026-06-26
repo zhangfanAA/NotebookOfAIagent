@@ -18,6 +18,26 @@ DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 _initialized = False
 
 
+class _ExcludeFilter(logging.Filter):
+    """排除指定前缀的日志"""
+    def __init__(self, excluded_prefixes: list[str]):
+        super().__init__()
+        self._excluded = excluded_prefixes
+
+    def filter(self, record):
+        return not any(record.name.startswith(p) for p in self._excluded)
+
+
+class _IncludeFilter(logging.Filter):
+    """只包含指定前缀的日志"""
+    def __init__(self, included_prefixes: list[str]):
+        super().__init__()
+        self._included = included_prefixes
+
+    def filter(self, record):
+        return any(record.name.startswith(p) for p in self._included)
+
+
 def _setup_root_logger():
     """配置根日志记录器"""
     global _initialized
@@ -28,10 +48,17 @@ def _setup_root_logger():
     root_logger = logging.getLogger("learning_assistant")
     root_logger.setLevel(logging.DEBUG)
 
-    # 控制台输出（INFO 级别以上）
-    console_handler = logging.StreamHandler(sys.stdout)
+    # 控制台输出（INFO 级别以上，排除数据库和 httpx 日志）
+    console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
+    console_handler.addFilter(_ExcludeFilter([
+        "learning_assistant.database",
+        "learning_assistant.supervisor",
+        "learning_assistant.api.routes",
+        "httpx",
+        "httpcore",
+    ]))
     root_logger.addHandler(console_handler)
 
     # 文件输出（DEBUG 级别以上，自动轮转 5MB x 3）
@@ -55,6 +82,21 @@ def _setup_root_logger():
     error_handler.setLevel(logging.ERROR)
     error_handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
     root_logger.addHandler(error_handler)
+
+    # Agent 日志单独记录
+    agent_handler = RotatingFileHandler(
+        LOG_DIR / "agent.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    agent_handler.setLevel(logging.DEBUG)
+    agent_handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
+    agent_handler.addFilter(_IncludeFilter([
+        "learning_assistant.supervisor",
+        "learning_assistant.api.routes",
+    ]))
+    root_logger.addHandler(agent_handler)
 
 
 def get_logger(name: str) -> logging.Logger:

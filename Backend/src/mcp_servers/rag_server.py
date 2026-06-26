@@ -49,7 +49,12 @@ async def list_documents(user_id: int) -> str:
     """
     rag = get_rag_service()
     docs = await run_blocking(rag.get_documents, user_id=user_id)
-    return to_json_string({"documents": docs})
+    # 移除 full_text 避免 MCP stdio 传输大数据挂起
+    slim_docs = [
+        {k: v for k, v in d.items() if k != "full_text"}
+        for d in docs
+    ]
+    return to_json_string({"documents": slim_docs})
 
 
 @mcp.tool()

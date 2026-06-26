@@ -129,8 +129,14 @@ class SessionRepository:
         return affected > 0
 
     def delete_session(self, session_id: str) -> bool:
-        """软删除会话（设置 is_active=0）"""
-        sql = "UPDATE sessions SET is_active = 0 WHERE session_id = %s"
+        """删除会话（硬删除，级联删除消息）"""
+        # 先删除关联消息
+        msg_sql = "DELETE FROM messages WHERE session_id = %s"
+        msg_affected = self.db.execute(msg_sql, (session_id,))
+        logger.info("删除会话消息: session=%s count=%d", session_id, msg_affected)
+
+        # 再删除会话
+        sql = "DELETE FROM sessions WHERE session_id = %s"
         affected = self.db.execute(sql, (session_id,))
         logger.info("删除会话: %s (affected=%d)", session_id, affected)
         return affected > 0

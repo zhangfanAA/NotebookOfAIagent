@@ -243,7 +243,7 @@ class LLMClient:
             messages: [{"role": "system"|"user"|"assistant", "content": str}]
             temperature: 温度参数
             max_tokens: 最大生成 token 数
-            use_backward_compat: 兼容旧代码，不再使用
+            use_fallback: 兼容旧代码，不再使用
 
         Returns:
             模型输出字符串
@@ -356,7 +356,11 @@ class LLMClient:
                     max_tokens=max_tokens,
                 )
                 elapsed = time.time() - start
-                content = response.choices[0].message.content
+                msg = response.choices[0].message
+                content = msg.content or ""
+                # deepseek-reasoner 系列模型把回答放在 reasoning_content
+                if not content and hasattr(msg, "reasoning_content") and msg.reasoning_content:
+                    content = msg.reasoning_content
                 # 提取用量信息
                 if response.usage:
                     self.last_usage = {

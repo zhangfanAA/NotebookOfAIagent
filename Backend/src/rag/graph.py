@@ -17,7 +17,7 @@ from src.logger import get_logger
 logger = get_logger("rag.graph")
 
 
-def _should_generate(state: AgentState) -> str:
+def _should_generate(state: dict) -> str:
     """
     评估节点后的路由判断
 

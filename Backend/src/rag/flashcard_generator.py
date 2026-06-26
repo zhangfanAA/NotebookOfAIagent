@@ -65,6 +65,7 @@ class FlashcardGenerator:
             return {
                 "status": "success",
                 "cards": cards,
+                "flashcards": cards,
                 "message": f"成功生成 {len(cards)} 张闪卡",
             }
 
@@ -79,18 +80,18 @@ class FlashcardGenerator:
             doc_parts.append(f"=== {name} ===\n{text}")
         all_content = "\n\n".join(doc_parts)
 
-        focus_part = f"\n8. 重点关注主题：{topic_focus}" if topic_focus.strip() else ""
+        focus_part = f"\n- 重点关注主题：{topic_focus}" if topic_focus.strip() else ""
 
         return f"""你是一个学术助教。根据以下文档内容生成闪卡（问答对），用于学生复习记忆。
 
 ## 要求
-1. 生成 {num_cards} 张闪卡
-2. 每张闪卡包含：正面（问题）和背面（答案）
-3. 问题简洁明确，答案精炼准确
-4. 覆盖文档中的关键知识点
-5. 使用中文
+- 生成 {num_cards} 张闪卡
+- 每张闪卡包含：正面（问题）和背面（答案）
+- 问题简洁明确，答案精炼准确
+- 覆盖文档中的关键知识点
+- 使用中文
 {focus_part}
-6. 必须严格按以下 JSON 格式输出，不要输出其他内容：
+- 必须严格按以下 JSON 格式输出，不要输出其他内容：
 
 ```json
 [

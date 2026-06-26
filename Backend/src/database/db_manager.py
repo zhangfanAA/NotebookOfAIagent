@@ -458,6 +458,11 @@ class DBManager:
                     "INSERT IGNORE INTO global_config (num, llm_provider, api_key, base_url, model) "
                     "VALUES (3, '', '1', '', '')"
                 )
+                # 余额 OCR 配置（num=4，api_key 存 PaddleOCR-VL Access Token）
+                cursor.execute(
+                    "INSERT IGNORE INTO global_config (num, llm_provider, api_key, base_url, model) "
+                    "VALUES (4, '', '', '', '')"
+                )
 
                 # 站内信表
                 cursor.execute("""

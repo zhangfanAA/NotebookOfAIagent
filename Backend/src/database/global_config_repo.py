@@ -1,6 +1,6 @@
 """
 全局配置仓库
-num=1 全局云端配置, num=2 余额模型配置, num=3 系统设置
+num=1 全局云端配置, num=2 余额模型配置, num=3 系统设置, num=4 余额OCR配置
 """
 
 from src.database.db_manager import DBManager
@@ -37,11 +37,16 @@ class GlobalConfigRepository:
     def update(self, num: int = 1, llm_provider: str = None, api_key: str = None,
                base_url: str = None, model: str = None):
         """
-        更新指定 num 的字段（只更新非 None 的字段）
-
-        Args:
-            num: 1=全局云端, 2=余额模型
+        更新指定 num 的字段（只更新非 None 的字段，行不存在时自动插入）
         """
+        # 确保行存在
+        existing = self.db.fetch_one("SELECT num FROM global_config WHERE num = %s", (num,))
+        if not existing:
+            self.db.execute(
+                "INSERT INTO global_config (num, llm_provider, api_key, base_url, model) VALUES (%s, '', '', '', '')",
+                (num,),
+            )
+
         updates = []
         params = []
         if llm_provider is not None:
@@ -101,3 +106,17 @@ class GlobalConfigRepository:
         """设置桌面端 PaddleOCR 开关"""
         self.update(3, model="1" if enabled else "0")
         logger.info("桌面端 PaddleOCR 开关已设置为: %s", "开启" if enabled else "关闭")
+
+    # ===== 余额 OCR 配置 (num=4) =====
+
+    def get_balance_ocr_config(self) -> dict:
+        """获取余额 OCR 配置"""
+        cfg = self.get(4)
+        return {
+            "api_key": cfg.get("api_key", ""),
+        }
+
+    def update_balance_ocr_config(self, api_key: str = None):
+        """更新余额 OCR 配置"""
+        self.update(4, api_key=api_key)
+        logger.info("余额 OCR 配置已更新")

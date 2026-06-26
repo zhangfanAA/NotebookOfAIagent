@@ -14,14 +14,13 @@ from src.logger import get_logger
 logger = get_logger("rag.generate")
 
 # 生成 Prompt
-GENERATE_PROMPT = """你是一个专业的学习助手，擅长为学生提供准确、有条理的解答。
+GENERATE_PROMPT = """你是一个专业的学习助手。你必须基于下方参考资料来回答问题。
 
-## 规则
-1. 基于提供的参考资料回答问题，不要编造信息
-2. 在答案中引用来源，格式为：[来源：文件名 第X页]
-3. 使用 Markdown 格式，适当使用标题、列表、代码块
-4. 如果参考资料不足以完整回答，诚实说明哪些部分可以回答、哪些不确定
-5. 如果参考资料完全无法回答问题，坦诚告知
+## 强制规则（违反则回答无效）
+1. **每个知识点、每个段落都必须标注来源**，格式为 [1] [2] [3]
+2. 引用编号对应下方参考资料的编号，例如 [1] 对应"参考资料 1"
+3. 不得编造信息，不得使用未在参考资料中出现的来源编号
+4. 使用 Markdown 格式，适当使用标题、列表、表格
 
 ## 参考资料
 {context}
@@ -29,7 +28,12 @@ GENERATE_PROMPT = """你是一个专业的学习助手，擅长为学生提供�
 ## 用户问题
 {question}
 
-## 请回答（Markdown格式，务必包含引用来源）:"""
+## 回答要求
+- 每句话结尾或关键知识点后必须加 [编号]
+- 示例格式："TCP 有三次握手 [1]，拥塞控制包括慢开始和拥塞避免 [2][3]"
+- 如果参考资料不足以回答，说明哪些部分可以回答并标注来源，哪些不确定
+
+请开始回答（Markdown格式，每个知识点必须标注来源编号）："""
 
 # 无法回答时的兜底 Prompt
 FALLBACK_PROMPT = """你是一个学习助手。以下参考资料中没有找到与用户问题直接相关的内容。
@@ -108,7 +112,7 @@ def generate_node(state: AgentState) -> dict:
             continue
         seen_sources.add(dedup_key)
 
-        context_parts.append(f"[资料{i+1}] (来源: {source_name} 第{page}页, 相关度: {score:.2f})\n{content}")
+        context_parts.append(f"【参考资料 {i+1}】来源:《{source_name}》第{page}页\n{content}")
         sources_list.append({
             "content": content[:200],
             "source": source_name,

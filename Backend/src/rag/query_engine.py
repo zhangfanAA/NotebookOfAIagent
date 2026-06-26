@@ -17,6 +17,25 @@ from src.logger import get_logger
 logger = get_logger("rag.query_engine")
 
 
+def _generate_title(llm_client, question: str) -> str:
+    """用 LLM 根据问题生成简短标题，失败时降级为截断"""
+    prompt = f"用中文起一个简短标题，不超过15字，直接输出标题：{question[:200]}"
+    try:
+        title = llm_client.chat(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=300,
+        )
+        title = title.strip().strip('"').strip("'").replace("\n", "").replace("。", "")
+        if len(title) > 20:
+            title = title[:20]
+        if title:
+            return title
+    except Exception as e:
+        logger.debug("LLM 生成标题失败: %s", e)
+    return question.strip()[:20]
+
+
 class QueryEngine:
     """查询引擎"""
 
@@ -116,8 +135,7 @@ class QueryEngine:
             if llm_client:
                 self._llm_client = llm_client
 
-            from src.rag.state import AgentState
-            initial_state: AgentState = {
+            initial_state: dict = {
                 "question": query_for_agent,
                 "rewritten_query": None,
                 "documents": None,
@@ -217,6 +235,7 @@ class QueryEngine:
 
         question = safety["text"]
 
+        original_llm = None
         try:
             context_messages = self._session_mgr.get_recent_context(session_id, turns=3)
             effective_question = question
@@ -274,8 +293,7 @@ class QueryEngine:
             if llm_client:
                 self._llm_client = llm_client
 
-            from src.rag.state import AgentState
-            initial_state: AgentState = {
+            initial_state: dict = {
                 "question": query_for_agent,
                 "rewritten_query": None,
                 "documents": None,
@@ -331,7 +349,7 @@ class QueryEngine:
                     if dedup_key in seen_sources:
                         continue
                     seen_sources.add(dedup_key)
-                    context_parts.append(f"[资料{i+1}] ({source_name} 第{page}页)\n{doc['content']}")
+                    context_parts.append(f"【参考资料 {i+1}】来源:《{source_name}》第{page}页\n{doc['content']}")
                     sources_list.append({
                         "content": doc["content"][:200],
                         "source": source_name,
@@ -382,11 +400,15 @@ class QueryEngine:
             except Exception as e:
                 logger.debug("聊天记录存储跳过: %s", str(e))
 
-            self._maybe_update_title(session_id, question)
+            new_title = self._maybe_update_title(session_id, question)
             diagnosis_result = self._diagnosis.record_question(session_id, question)
 
             # 用量信息
             usage_info = self._llm_client.last_usage
+
+            # 发送标题更新事件
+            if new_title:
+                yield {"type": "title", "data": new_title}
 
             yield {
                 "type": "result",
@@ -408,25 +430,27 @@ class QueryEngine:
             yield {"type": "error", "data": str(e)}
         finally:
             # 恢复原始 LLMClient
-            if llm_client:
+            if llm_client and original_llm is not None:
                 self._llm_client = original_llm
 
-    def _maybe_update_title(self, session_id: str, question: str):
-        """第一条消息时自动生成会话标题"""
+    def _maybe_update_title(self, session_id: str, question: str) -> str | None:
+        """第一条消息时自动生成会话标题，返回新标题或 None"""
         try:
             from src.database.session_repo import SessionRepository
             session_repo = SessionRepository()
             session = session_repo.get_session(session_id)
-            if session and session.get("title") in ("新会话", "New Session", None, ""):
-                prompt = f"请用不超过20个字概括以下问题作为会话标题，只输出标题，不要引号或标点：\n{question[:200]}"
-                title = self._llm_client.chat(
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    max_tokens=50,
-                )
-                title = title.strip().strip('"').strip("'")[:20]
-                if title:
-                    session_repo.update_title(session_id, title)
+            if not session:
+                return None
+            current_title = session.get("title", "")
+            if current_title not in ("新会话", "New Session", "", None):
+                return None
+            logger.info("自动生成会话标题: session=%s question='%s'", session_id, question[:50])
+            title = _generate_title(self._llm_client, question)
+            if title:
+                session_repo.update_title(session_id, title)
+                logger.info("会话标题已更新: %s -> %s", session_id, title)
+                return title
+            return None
         except Exception as e:
             logger.debug("更新会话标题失败: %s", str(e))
 

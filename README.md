@@ -46,22 +46,24 @@ SmartRead 是一款基于 RAG（检索增强生成）的 AI 智能学习助手�
 │  │      传统 REST 路由       │  │      Supervisor Agent 路由       │ │
 │  │  /api/chat/stream        │  │  /api/agent/chat                │ │
 │  │  /api/upload  /api/quiz  │  │  /api/agent/stream              │ │
+│  │  /api/memory/stats       │  │                                 │ │
 │  └────────────┬─────────────┘  └──────────────┬──────────────────┘ │
 │               │                               │                    │
 │  ┌────────────┴─────────────┐  ┌──────────────┴──────────────────┐ │
 │  │     RAGService 门面      │  │    Supervisor Agent (LangGraph) │ │
 │  │  ┌────────┐ ┌─────────┐ │  │  ┌─────────┐ ┌───────────────┐ │ │
 │  │  │RAG 查询│ │文档管理  │ │  │  │ChatOpenAI│ │ToolNode(MCP) │ │ │
-│  │  └────────┘ └─────────┘ │  │  └─────────┘ └───────────────┘ │ │
-│  │  ┌────────┐ ┌─────────┐ │  └──────────────┬──────────────────┘ │
-│  │  │思维导图 │ │测验/闪卡│ │                  │                    │
-│  │  └────────┘ └─────────┘ │     ┌────────────┴────────────┐      │
-│  └──────────────────────────┘     │     MCP Server 层       │      │
-│                                   │  ┌─────┐ ┌─────┐ ┌────┐│      │
-│                                   │  │ RAG │ │学习 │ │OCR ││      │
-│                                   │  │工具  │ │工具  │ │工具 ││      │
-│                                   │  └─────┘ └─────┘ └────┘│      │
-│                                   └─────────────────────────┘      │
+│  │  └────────┘ └─────────┘ │  │  └─────────┘ └───────┬───────┘ │ │
+│  │  ┌────────┐ ┌─────────┐ │  └───────────────────────┼─────────┘ │
+│  │  │思维导图 │ │测验/闪卡│ │                          │           │
+│  │  └────────┘ └─────────┘ │     ┌────────────────────┴────────┐  │
+│  └──────────────────────────┘     │   MCP Server (HTTP/SSE)     │  │
+│                                   │  /mcp/rag/sse    /mcp/learning/sse│
+│                                   │  ┌─────┐ ┌─────┐            │  │
+│                                   │  │ RAG │ │学习 │            │  │
+│                                   │  │工具  │ │工具  │            │  │
+│                                   │  └─────┘ └─────┘            │  │
+│                                   └─────────────────────────────┘  │
 └────────┬──────────────────────────────────┬────────────────────────┘
          │                                  │
     ┌────┴────┐                       ┌─────┴─────┐
@@ -145,7 +147,7 @@ demo1/
 │   │   │   ├── chat-area.tsx   # 对话区域
 │   │   │   ├── input-bar.tsx   # 输入栏（含记忆模式按钮）
 │   │   │   ├── sidebar.tsx     # 侧边栏
-│   │   │   ├── settings-panel.tsx # 设置面板（含 OCR 设置）
+│   │   │   ├── settings-panel.tsx # 设置面板（含 OCR/Agent 设置）
 │   │   │   └── ...
 │   │   └── lib/
 │   │       ├── api.ts          # API 请求封装
@@ -156,6 +158,24 @@ demo1/
 │
 ├── exeFront/                   # 桌面端前端（Electron + Vite）
 │   ├── frontend-src/           # 前端源码（结构同 Frontend/src）
+│   ├── electron/               # Electron 主进程
+│   └── package.json
+│
+├── FrontendContest/            # 比赛版 Web 前端（Next.js）
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── chat-area.tsx   # 对话区域（含 Agent 侧边栏 + 记忆面板）
+│   │   │   ├── agent-sidebar.tsx # Agent 思考链可视化侧边栏
+│   │   │   ├── memory-panel.tsx # 对话记忆可视化面板
+│   │   │   ├── input-bar.tsx   # 输入栏
+│   │   │   └── settings-panel.tsx # 设置面板（含 Agent 可视化开关）
+│   │   └── lib/
+│   │       ├── api.ts          # API 封装（含 agentStream、记忆 API）
+│   │       └── types.ts        # 类型（含 AgentStep、AgentChunk）
+│   └── package.json
+│
+├── exeFrontContest/            # 比赛版桌面端前端（Electron + Vite）
+│   ├── frontend-src/           # 前端源码（结构同 FrontendContest/src）
 │   ├── electron/               # Electron 主进程
 │   └── package.json
 │
@@ -189,8 +209,8 @@ START → 检索(Retrieve) → 评估(Grade)
 ```
 
 **核心节点：**
-- **检索节点**：在 ChromaDB 向量库中进行相似度搜索，提取 Top-K 知识片段
-- **评估节点**：LLM 判断检索片段是否能解答问题（yes/no）
+- **检索节点**：在 ChromaDB 向量库中进行相似度搜索，提取 Top-K 知识片段。查询净化：从拼接了历史上下文的查询中提取当前问题，避免历史噪声干扰嵌入。分数阈值过滤：score < 0.45 的结果被丢弃
+- **评估节点**：LLM 判断检索片段是否能解答问题（yes/no）。分数 >= 0.50 直接判定相关（跳过 LLM）
 - **生成节点**：结合片段和问题生成带出处的最终答案
 - **重写节点**：分析原因，重新生成更易于检索的搜索词
 
@@ -333,25 +353,28 @@ python main.py  # 端口 8001
 
 将系统核心能力封装为 MCP Server，供外部 AI 应用通过标准 MCP 协议调用。
 
-**传输方式**：stdio（子进程 stdin/stdout 通信）
+**传输方式**：HTTP/SSE（挂载为 FastAPI 子应用，避免 stdio 子进程问题）
 
-**三个 MCP Server，共 11 个工具：**
+**挂载路径**：
+- `/mcp/rag/sse` — RAG Server SSE 端点
+- `/mcp/learning/sse` — Learning Server SSE 端点
+
+**两个 MCP Server，共 9 个工具：**
 
 | Server | 文件 | 工具 | 说明 |
 |--------|------|------|------|
 | RAG Server | `mcp_servers/rag_server.py` | `rag_query`, `list_documents`, `upload_document`, `delete_document` | RAG 问答 + 文档管理 |
 | Learning Server | `mcp_servers/learning_tools_server.py` | `generate_mindmap`, `generate_quiz`, `check_quiz_answer`, `generate_flashcards`, `compare_documents` | 学习工具生成 |
-| OCR Server | `mcp_servers/ocr_server.py` | `ocr_image`, `parse_pdf` | OCR 识别 + PDF 解析 |
 
 ### 5.18 Supervisor Agent（多 Agent 调度）
 
-基于 LangGraph 构建的 ReAct Agent，作为"父 Agent"调度 MCP 工具完成复杂学习任务。
+基于 LangGraph 构建的 ReAct Agent，通过 MCP 协议调度工具完成复杂学习任务。
 
 **架构**：
 ```
 用户 → /api/agent/stream → SupervisorGraph
   → ChatOpenAI（tool-calling LLM，决定调用哪个工具）
-  → ToolNode（通过 MCP 子进程执行工具）
+  → ToolNode（通过 MCP SSE 执行工具）
   → ChatOpenAI（整合结果生成最终答案）
   → SSE 流式返回（tool_call / tool_result / token / done 事件）
 ```
@@ -361,6 +384,47 @@ python main.py  # 端口 8001
 - user_id 自动注入，防止越权访问
 - session_id 按需注入，支持 RAG 查询的对话上下文
 - 流式事件包含工具调用过程，前端可展示 Agent 思考链
+- 支持记忆模式：Agent 模式下可同时启用记忆检索
+
+### 5.19 Agent 思考链可视化（比赛版前端）
+
+比赛版前端（FrontendContest / exeFrontContest）新增 Agent 思考链可视化功能：
+
+**功能**：
+- 右侧边栏实时展示 Agent 的工具调用决策过程
+- 每个步骤显示：工具图标、中文名称、参数摘要、执行结果
+- 支持折叠/展开，默认展开最新步骤
+- 侧边栏支持拖拽调整宽度（240px ~ 500px）
+- 流式执行时显示进度条和脉冲动画
+
+**显示示例**：
+```
+🧠 正在知识检索
+   参数: question="C语言指针与数组区别"
+   → 检索完成，置信度 85%，引用 3 个来源
+
+📚 正在列出文档
+   → 找到 2 份文档
+
+📝 正在生成测验
+   参数: count=5, difficulty="中等"
+   → 生成 5 道题目
+```
+
+**开启方式**：设置面板 → 显示设置 → Agent 思考链可视化
+
+### 5.20 对话记忆可视化（比赛版前端）
+
+比赛版前端新增对话记忆可视化面板：
+
+**功能**：
+- 展示当前用户的向量记忆存储状态（条数、集合名、维度、模型）
+- 展示当前会话的记忆记录（问答对、时间戳、引用来源）
+- 支持展开/收起
+
+**API 端点**：
+- `GET /api/memory/stats` — 获取记忆向量统计
+- `GET /api/memory/recent?session_id=xxx` — 获取指定会话的记忆记录
 
 ---
 
@@ -433,7 +497,7 @@ python main.py  # 端口 8001
 | POST | `/api/agent/chat` | Supervisor Agent 非流式对话 | 是 |
 | POST | `/api/agent/stream` | Supervisor Agent SSE 流式对话 | 是 |
 
-**请求体**：`{"question": "...", "session_id": "..."}`（session_id 可选）
+**请求体**：`{"question": "...", "session_id": "...", "memory_mode": false}`（session_id 可选，memory_mode 启用记忆检索）
 
 **流式事件格式**：
 ```json
@@ -569,12 +633,20 @@ python main.py  # 端口 8001
 | PUT | `/api/admin/settings/registration` | 设置注册开关 | 管理员 |
 | GET | `/api/admin/settings/paddle-ocr` | PaddleOCR 开关 | 管理员 |
 | PUT | `/api/admin/settings/paddle-ocr` | 设置 PaddleOCR 开关 | 管理员 |
+| GET | `/api/admin/settings/balance-ocr` | 余额 OCR 配置 | 管理员 |
+| PUT | `/api/admin/settings/balance-ocr` | 更新余额 OCR 配置 | 管理员 |
+| GET | `/api/admin/settings/balance-model` | 余额模型配置 | 管理员 |
+| PUT | `/api/admin/settings/balance-model` | 更新余额模型配置 | 管理员 |
 
-### 7.16 OCR 代理接口
+### 7.16 OCR 接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
 | POST | `/api/ocr/cloud` | 云端 OCR 代理（转发到 OCRServer） | 是（Bearer Token） |
+| POST | `/api/ocr/balance` | 余额 OCR 提交任务（异步，返回 job_id） | 是 |
+| GET | `/api/ocr/balance/{job_id}` | 查询 OCR 任务状态 | 是 |
+
+**余额 OCR 流程**：提交任务后立即返回 `job_id`，前端轮询 `/api/ocr/balance/{job_id}` 获取结果。每页扣费 0.005 元。
 
 ### 7.17 下载文件接口
 
@@ -585,7 +657,14 @@ python main.py  # 端口 8001
 | DELETE | `/api/downloads/{file_id}` | 删除文件（管理员） | 管理员 |
 | GET | `/api/downloads/{file_id}/file` | 下载文件 | 是 |
 
-### 7.18 系统接口
+### 7.18 记忆接口
+
+| 方法 | 路径 | 说明 | 认证 |
+|------|------|------|------|
+| GET | `/api/memory/stats` | 获取记忆向量统计 | 是 |
+| GET | `/api/memory/recent?session_id=xxx` | 获取指定会话的记忆记录 | 是 |
+
+### 7.19 系统接口
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
@@ -672,7 +751,27 @@ python main.py            # 启动 OCR 服务 (localhost:8001)
 
 ---
 
-## 十、依赖清单
+## 十、比赛版前端
+
+比赛版前端（FrontendContest / exeFrontContest）是专为答辩演示优化的版本，在标准版基础上新增：
+
+| 功能 | 说明 |
+|------|------|
+| Agent 思考链可视化 | 右侧边栏实时展示 Agent 工具调用过程 |
+| 对话记忆可视化 | 展示向量存储状态和本会话记忆记录 |
+| Agent 模式开关 | 设置面板中开启/关闭 Agent 可视化 |
+| 记忆模式 | 输入栏切换，Agent 模式下也可启用 |
+| 侧边栏拖拽 | 左右拖拽调整侧边栏宽度 |
+
+**与标准版的差异**：
+- 新增组件：`agent-sidebar.tsx`、`memory-panel.tsx`
+- 修改组件：`chat-area.tsx`、`settings-panel.tsx`、`api.ts`、`types.ts`
+- API 新增：`agentStream()`、`getMemoryStats()`、`getMemoryRecent()`
+- 类型新增：`AgentStep`、`AgentChunk`、`MemoryStats`、`MemoryRecord`
+
+---
+
+## 十一、依赖清单
 
 ### 10.1 后端依赖 (Backend/requirements.txt)
 
@@ -710,3 +809,5 @@ python main.py            # 启动 OCR 服务 (localhost:8001)
 | V3.1 | 2024-06 | 前后端分离（Next.js 替换 Streamlit）、PaddleOCR 开关、性能优化 |
 | V4 | 2024-06 | MCP Server 封装（11 工具）+ Supervisor Agent（多 Agent 调度）+ 新增 /api/agent 端点 |
 | V5 | 2024-06 | OCR 服务器独立为 OCRServer/ + 记忆模式（Memory Mode）+ 设置面板 OCR 配置 |
+| V6 | 2024-06 | MCP 传输改为 HTTP/SSE + Agent 思考链可视化 + 对话记忆可视化 + 比赛版前端 |
+| V7 | 2026-06 | RAG 检索优化（分数阈值过滤 + 查询净化）+ OCR 异步改造 + 余额 OCR/模型管理员配置 + LaTeX 公式渲染 + 引用上标 + Agent 工具参数修复 + 代码审查修复 |

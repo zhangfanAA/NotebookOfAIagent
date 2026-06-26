@@ -51,6 +51,11 @@ class DocumentManager:
         file_type = path.suffix.lstrip(".").lower()
         file_size = path.stat().st_size
 
+        # 文件类型校验（在复制和入库之前）
+        if file_type != "pdf":
+            return {"status": "error", "chunks_count": 0,
+                    "message": f"暂不支持的文件类型: {file_type}，仅支持 PDF"}
+
         # 复制到永久存储目录
         pdf_dir = _get_pdf_dir()
         os.makedirs(pdf_dir, exist_ok=True)
@@ -68,10 +73,12 @@ class DocumentManager:
         )
 
         try:
-            # 解析 PDF
+            # 解析 PDF（自动处理扫描型 PDF 的 OCR）
             if file_type == "pdf":
                 result = parse_pdf(file_path)
                 pages = result["pages"]
+                if result.get("ocr_used"):
+                    logger.info("文档使用了 OCR 识别: %s", file_name)
             else:
                 return {"status": "error", "chunks_count": 0,
                         "message": f"暂不支持的文件类型: {file_type}"}

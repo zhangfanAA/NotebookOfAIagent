@@ -200,12 +200,12 @@ def delete_by_source(source_name: str, user_id: int = None, collection_name: str
         return 0
 
 
-def search(query: str, user_id: int = None, top_k: int = None) -> list:
-    """向量相似度检索（带缓存）"""
+def search(query: str, user_id: int = None, top_k: int = None, score_threshold: float = 0.45) -> list:
+    """向量相似度检索（带缓存 + 分数阈值过滤）"""
     if top_k is None:
         top_k = get_config()["agent"]["retrieve_top_k"]
 
-    cache_key = f"{user_id}:{query}:{top_k}"
+    cache_key = f"{user_id}:{query}:{top_k}:{score_threshold}"
     if cache_key in _search_cache:
         logger.debug("缓存命中: query='%s'", query[:50])
         return _search_cache[cache_key]
@@ -216,10 +216,12 @@ def search(query: str, user_id: int = None, top_k: int = None) -> list:
         logger.warning("向量库为空，无法检索")
         return []
 
+    # 多取一些结果，过滤后再截断
+    fetch_k = min(top_k * 3, collection.count())
     query_embedding = embed_query(query)
     results = collection.query(
         query_embeddings=[query_embedding],
-        n_results=min(top_k, collection.count()),
+        n_results=fetch_k,
         include=["documents", "metadatas", "distances"],
     )
 
@@ -230,14 +232,19 @@ def search(query: str, user_id: int = None, top_k: int = None) -> list:
         results["distances"][0],
     ):
         score = max(0.0, 1.0 - dist)
+        if score < score_threshold:
+            continue
         search_results.append({
             "content": doc,
             "metadata": meta,
             "score": round(score, 4),
         })
 
-    logger.debug("检索完成: query='%s' → %d results (top score=%.4f)",
-                 query[:50], len(search_results),
+    # 截断到 top_k
+    search_results = search_results[:top_k]
+
+    logger.debug("检索完成: query='%s' → %d results (阈值=%.2f, top score=%.4f)",
+                 query[:50], len(search_results), score_threshold,
                  search_results[0]["score"] if search_results else 0)
 
     if len(_search_cache) >= _cache_max_size:
